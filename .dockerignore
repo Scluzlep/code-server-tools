@@ -1,0 +1,7 @@
+.git
+.github
+agent.md
+README.md
+docker-compose.yml
+.dockerignore
+*.log
