@@ -11,7 +11,8 @@ ARG TARGETARCH=arm64
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
     LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8
+    LC_ALL=C.UTF-8 \
+    EXTENSIONS_GALLERY='{"serviceUrl":"https://marketplace.visualstudio.com/_apis/public/gallery","cacheUrl":"https://vscode.blob.core.windows.net/gallery/index","itemUrl":"https://marketplace.visualstudio.com/items","resourceUrlTemplate":"https://{publisher}.vscode-unpkg.net/{publisher}/{name}/{version}/{path}"}'
 
 # ------------------------------------------------------------------------------
 # 1. 安装基础运行时动态链接库 & 编译基础依赖

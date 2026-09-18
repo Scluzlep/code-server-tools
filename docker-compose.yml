@@ -13,6 +13,8 @@ services:
       - TZ=Asia/Shanghai
       - PASSWORD=ChangeMeToYourPassword
       - DEFAULT_WORKSPACE=/config/workspace
+      # VS Code 官方插件市场 (Visual Studio Marketplace)
+      - 'EXTENSIONS_GALLERY={"serviceUrl":"https://marketplace.visualstudio.com/_apis/public/gallery","cacheUrl":"https://vscode.blob.core.windows.net/gallery/index","itemUrl":"https://marketplace.visualstudio.com/items","resourceUrlTemplate":"https://{publisher}.vscode-unpkg.net/{publisher}/{name}/{version}/{path}"}'
       # ADB 宿主机网络穿透 (Client-Server 机制，通过宿主机 5037 端口透传)
       - ADB_SERVER_SOCKET=tcp:host.docker.internal:5037
       # 终端与全局代理注入 (宿主机 7897 端口)
