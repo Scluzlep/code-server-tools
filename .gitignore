@@ -1,0 +1,14 @@
+# Ignore agent instruction file
+agent.md
+
+# OS and editor files
+.DS_Store
+Thumbs.db
+*.swp
+*~
+.idea/
+.vscode/
+
+# Build caches & logs
+*.log
+.docker/

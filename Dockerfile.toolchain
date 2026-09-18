@@ -1,0 +1,169 @@
+# syntax=docker/dockerfile:1.4
+FROM ubuntu:24.04
+
+# 目标架构为 ARM64，无转译原生编译
+ARG TARGETARCH=arm64
+ENV DEBIAN_FRONTEND=noninteractive \
+    SHELL=/bin/bash \
+    LANG=C.UTF-8 \
+    LC_ALL=C.UTF-8
+
+# ------------------------------------------------------------------------------
+# 接收版本参数 (支持构建时覆盖，默认来自 .env)
+# ------------------------------------------------------------------------------
+ARG TOOLCHAIN_VERSION=1.0.0
+ARG GRADLE_VERSION=9.7.1
+ARG JDK25_URL="https://api.adoptium.net/v3/binary/latest/25/ga/linux/aarch64/jdk/hotspot/normal/eclipse"
+
+ARG PYTHON_VERSION_310=3.10.21
+ARG PYTHON_VERSION_312=3.12.14
+ARG PYTHON_VERSION_313=3.13.15
+ARG PYTHON_VERSION_314=3.14.7
+
+ARG GO_VERSION_1=1.26.8
+ARG GO_VERSION_2=1.27.1
+
+ARG ANDROID_CMDLINE_TOOLS_VERSION=11076708
+ARG ANDROID_PLATFORM=android-36
+ARG ANDROID_BUILD_TOOLS=36.0.0
+
+ARG KOTLIN_VERSION=2.4.20
+ARG JADX_VERSION=1.5.6
+ARG APKTOOL_VERSION=3.0.3
+
+# ------------------------------------------------------------------------------
+# 1. 基础编译工具链 & 系统库
+# ------------------------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc g++ clang llvm lld cmake ninja-build \
+    curl wget git p7zip-full unzip zip ca-certificates \
+    pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
+    libsqlite3-dev libncursesw5-dev xz-utils tk-dev \
+    libxml2-dev libxslt1-dev libxmlsec1-dev libffi-dev liblzma-dev jq \
+    && apt-get clean && rm -rf /var/lib/apt/lists/*
+
+# ------------------------------------------------------------------------------
+# 2. 多版本 Java (Adoptium Temurin 8/17/21/25 GA) + Gradle
+# ------------------------------------------------------------------------------
+ENV JAVA_ROOT=/opt/java GRADLE_HOME=/opt/gradle
+RUN mkdir -p ${JAVA_ROOT}/jdk-8 ${JAVA_ROOT}/jdk-17 ${JAVA_ROOT}/jdk-21 ${JAVA_ROOT}/jdk-25 /tmp/jdk && \
+    # JDK 8
+    curl -fsSL --retry 5 --retry-delay 3 "https://api.adoptium.net/v3/binary/latest/8/ga/linux/aarch64/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk8.tar.gz && \
+    tar -xzf /tmp/jdk/jdk8.tar.gz -C ${JAVA_ROOT}/jdk-8 --strip-components=1 && \
+    # JDK 17
+    curl -fsSL --retry 5 --retry-delay 3 "https://api.adoptium.net/v3/binary/latest/17/ga/linux/aarch64/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk17.tar.gz && \
+    tar -xzf /tmp/jdk/jdk17.tar.gz -C ${JAVA_ROOT}/jdk-17 --strip-components=1 && \
+    # JDK 21 (默认)
+    curl -fsSL --retry 5 --retry-delay 3 "https://api.adoptium.net/v3/binary/latest/21/ga/linux/aarch64/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk21.tar.gz && \
+    tar -xzf /tmp/jdk/jdk21.tar.gz -C ${JAVA_ROOT}/jdk-21 --strip-components=1 && \
+    # JDK 25 GA
+    curl -fsSL --retry 5 --retry-delay 3 "${JDK25_URL}" -o /tmp/jdk/jdk25.tar.gz && \
+    tar -xzf /tmp/jdk/jdk25.tar.gz -C ${JAVA_ROOT}/jdk-25 --strip-components=1 && \
+    rm -rf /tmp/jdk && \
+    # Gradle
+    mkdir -p /tmp/gradle && \
+    curl -fsSL --retry 5 --retry-delay 3 "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle/gradle.zip && \
+    unzip -q /tmp/gradle/gradle.zip -d /opt && \
+    mv /opt/gradle-${GRADLE_VERSION} ${GRADLE_HOME} && \
+    rm -rf /tmp/gradle
+
+# ------------------------------------------------------------------------------
+# 3. 多版本 Python (Astral uv + 数据科学 + 爬虫 + Frida 逆向 + Jupyter 内核)
+# ------------------------------------------------------------------------------
+COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+ENV PYENV_ROOT=/opt/pyenvs
+RUN mkdir -p ${PYENV_ROOT} && \
+    uv python install ${PYTHON_VERSION_310} ${PYTHON_VERSION_312} ${PYTHON_VERSION_313} ${PYTHON_VERSION_314} && \
+    uv venv --seed ${PYENV_ROOT}/py310 --python ${PYTHON_VERSION_310} && \
+    uv venv --seed ${PYENV_ROOT}/py312 --python ${PYTHON_VERSION_312} && \
+    uv venv --seed ${PYENV_ROOT}/py313 --python ${PYTHON_VERSION_313} && \
+    uv venv --seed ${PYENV_ROOT}/py314 --python ${PYTHON_VERSION_314} && \
+    for ver in py310 py312 py313 py314; do \
+      uv pip install --python ${PYENV_ROOT}/${ver} \
+        wheel setuptools \
+        numpy pandas scipy matplotlib \
+        requests beautifulsoup4 lxml httpx \
+        ipykernel ipython \
+        frida frida-tools; \
+    done
+
+# 注册 Jupyter 系统内核
+RUN mkdir -p /usr/local/share/jupyter/kernels && \
+    ${PYENV_ROOT}/py310/bin/python -m ipykernel install --prefix=/usr/local --name python310 --display-name "Python 3.10" && \
+    ${PYENV_ROOT}/py312/bin/python -m ipykernel install --prefix=/usr/local --name python312 --display-name "Python 3.12" && \
+    ${PYENV_ROOT}/py313/bin/python -m ipykernel install --prefix=/usr/local --name python313 --display-name "Python 3.13" && \
+    ${PYENV_ROOT}/py314/bin/python -m ipykernel install --prefix=/usr/local --name python314 --display-name "Python 3.14"
+
+# ------------------------------------------------------------------------------
+# 4. 多版本 Golang (1.26.8 与 1.27.1, 默认 1.26.8)
+# ------------------------------------------------------------------------------
+ENV GO_ROOT=/opt/go
+RUN mkdir -p ${GO_ROOT}/go${GO_VERSION_1} ${GO_ROOT}/go${GO_VERSION_2} /tmp/go && \
+    curl -fsSL --retry 5 --retry-delay 3 "https://go.dev/dl/go${GO_VERSION_1}.linux-arm64.tar.gz" -o /tmp/go/go1.tar.gz && \
+    tar -xzf /tmp/go/go1.tar.gz -C ${GO_ROOT}/go${GO_VERSION_1} --strip-components=1 && \
+    curl -fsSL --retry 5 --retry-delay 3 "https://go.dev/dl/go${GO_VERSION_2}.linux-arm64.tar.gz" -o /tmp/go/go2.tar.gz && \
+    tar -xzf /tmp/go/go2.tar.gz -C ${GO_ROOT}/go${GO_VERSION_2} --strip-components=1 && \
+    rm -rf /tmp/go && \
+    ln -sfn ${GO_ROOT}/go${GO_VERSION_1} ${GO_ROOT}/current
+
+# ------------------------------------------------------------------------------
+# 5. Android SDK、Kotlin 编译器、JADX & Apktool
+# ------------------------------------------------------------------------------
+ENV ANDROID_SDK_ROOT=/opt/android-sdk KOTLIN_HOME=/opt/kotlinc
+ENV PATH=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${JAVA_ROOT}/jdk-21/bin:${PATH}
+RUN mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools && \
+    curl -fsSL --retry 5 --retry-delay 3 "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" -o /tmp/cmdline-tools.zip && \
+    unzip -q /tmp/cmdline-tools.zip -d ${ANDROID_SDK_ROOT}/cmdline-tools && \
+    mv ${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools ${ANDROID_SDK_ROOT}/cmdline-tools/latest && \
+    rm -f /tmp/cmdline-tools.zip && \
+    yes | sdkmanager --licenses && \
+    sdkmanager "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}" && \
+    # Kotlin 编译器
+    curl -fsSL --retry 5 --retry-delay 3 "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" -o /tmp/kotlinc.zip && \
+    unzip -q /tmp/kotlinc.zip -d /opt && \
+    rm -f /tmp/kotlinc.zip && \
+    # JADX
+    mkdir -p /opt/jadx && \
+    curl -fsSL --retry 5 --retry-delay 3 "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" -o /tmp/jadx.zip && \
+    unzip -q /tmp/jadx.zip -d /opt/jadx && \
+    rm -f /tmp/jadx.zip && \
+    # Apktool
+    mkdir -p /opt/apktool && \
+    curl -fsSL --retry 5 --retry-delay 3 "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" -o /opt/apktool/apktool && \
+    curl -fsSL --retry 5 --retry-delay 3 "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" -o /opt/apktool/apktool.jar && \
+    chmod +x /opt/apktool/apktool /opt/apktool/apktool.jar
+
+ARG NODE_VERSION=24.21.0
+
+# ------------------------------------------------------------------------------
+# 6. Node.js LTS、Corepack & 前端工具生态 (/opt/node)
+# ------------------------------------------------------------------------------
+ENV NODE_HOME=/opt/node
+ENV PATH=${NODE_HOME}/bin:${PATH}
+RUN mkdir -p ${NODE_HOME} && \
+    curl -fsSL --retry 5 --retry-delay 3 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.xz" -o /tmp/node.tar.xz && \
+    tar -xJf /tmp/node.tar.xz -C ${NODE_HOME} --strip-components=1 && \
+    rm -f /tmp/node.tar.xz && \
+    corepack enable && \
+    npm install -g --force pnpm yarn typescript vite create-vue
+
+# ------------------------------------------------------------------------------
+# 7. Flutter SDK (Linux ARM64 稳定版)
+# ------------------------------------------------------------------------------
+ENV FLUTTER_ROOT=/opt/flutter
+ENV PATH=${FLUTTER_ROOT}/bin:${PATH}
+RUN git clone -b stable https://github.com/flutter/flutter.git ${FLUTTER_ROOT} && \
+    git config --system --add safe.directory "*" && \
+    flutter config --no-analytics && \
+    flutter precache --android && \
+    chmod -R a+rwX ${FLUTTER_ROOT}
+
+# ------------------------------------------------------------------------------
+# 8. 固化记录当前版本的 .env 配置文件至镜像内部与元数据标签
+# ------------------------------------------------------------------------------
+COPY .env /opt/dev-toolchain.env
+COPY .env /etc/dev-toolchain.env
+
+LABEL org.opencontainers.image.title="dev-toolchain-base" \
+      org.opencontainers.image.version="${TOOLCHAIN_VERSION}" \
+      org.opencontainers.image.description="ARM64 heavy development toolchain base image"

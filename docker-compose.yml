@@ -1,0 +1,32 @@
+version: '3.8'
+
+services:
+  code-server:
+    image: ghcr.io/scluzlep/code-server-withtools:latest
+    container_name: code-server-withtools
+    restart: unless-stopped
+    ports:
+      - "8443:8443"
+    environment:
+      - PUID=1000
+      - PGID=1000
+      - TZ=Asia/Shanghai
+      - PASSWORD=ChangeMeToYourPassword
+      - DEFAULT_WORKSPACE=/config/workspace
+      # ADB 宿主机网络穿透 (Client-Server 机制，通过宿主机 5037 端口透传)
+      - ADB_SERVER_SOCKET=tcp:host.docker.internal:5037
+      # 终端与全局代理注入 (宿主机 7897 端口)
+      - HTTP_PROXY=http://host.docker.internal:7897
+      - HTTPS_PROXY=http://host.docker.internal:7897
+      - ALL_PROXY=socks5://host.docker.internal:7897
+      - http_proxy=http://host.docker.internal:7897
+      - https_proxy=http://host.docker.internal:7897
+      - all_proxy=socks5://host.docker.internal:7897
+      - NO_PROXY=localhost,127.0.0.1,host.docker.internal,.local
+      - no_proxy=localhost,127.0.0.1,host.docker.internal,.local
+    volumes:
+      # 核心持久化数据卷 (代码工作区、VS Code 插件、用户配置及 Go 依赖)
+      - /opt/1panel/apps/code-server/data:/config
+    extra_hosts:
+      # 映射宿主机 IP，打通 7897 代理与 5037 ADB 通信
+      - "host.docker.internal:host-gateway"
