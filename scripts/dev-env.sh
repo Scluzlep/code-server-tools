@@ -71,6 +71,7 @@ set-py() {
         ln -sf "${CURRENT_PY}/bin/pip" /usr/local/bin/pip 2>/dev/null || true
         ln -sf "${CURRENT_PY}/bin/pip3" /usr/local/bin/pip3 2>/dev/null || true
         ln -sf "${CURRENT_PY}/bin/ipython" /usr/local/bin/ipython 2>/dev/null || true
+        ln -sf "${CURRENT_PY}/bin/jupyter" /usr/local/bin/jupyter 2>/dev/null || true
     fi
     echo "Switched to Python $v (${CURRENT_PY})"
 }
@@ -79,18 +80,22 @@ alias set-python="set-py"
 alias python310="/opt/pyenvs/py310/bin/python"
 alias py310="/opt/pyenvs/py310/bin/python"
 alias pip310="/opt/pyenvs/py310/bin/pip"
+alias jupyter310="/opt/pyenvs/py310/bin/jupyter"
 
 alias python312="/opt/pyenvs/py312/bin/python"
 alias py312="/opt/pyenvs/py312/bin/python"
 alias pip312="/opt/pyenvs/py312/bin/pip"
+alias jupyter312="/opt/pyenvs/py312/bin/jupyter"
 
 alias python313="/opt/pyenvs/py313/bin/python"
 alias py313="/opt/pyenvs/py313/bin/python"
 alias pip313="/opt/pyenvs/py313/bin/pip"
+alias jupyter313="/opt/pyenvs/py313/bin/jupyter"
 
 alias python314="/opt/pyenvs/py314/bin/python"
 alias py314="/opt/pyenvs/py314/bin/python"
 alias pip314="/opt/pyenvs/py314/bin/pip"
+alias jupyter314="/opt/pyenvs/py314/bin/jupyter"
 
 # Python Tab 补全
 _set_py_completion() {
@@ -106,10 +111,10 @@ complete -F _set_py_completion set-python
 set-go() {
     local v="$1"
     case "$v" in
-        1.26|1.26.8) export GOROOT=/opt/go/go1.26.8 ;;
-        1.27|1.27.1) export GOROOT=/opt/go/go1.27.1 ;;
+        1.26|1.26.10) export GOROOT=/opt/go/go1.26.10 ;;
+        1.27|1.27.3) export GOROOT=/opt/go/go1.27.3 ;;
         *)
-            echo "Usage: set-go [1.26.8|1.27.1]"
+            echo "Usage: set-go [1.26.10|1.27.3]"
             return 1
             ;;
     esac
@@ -126,13 +131,13 @@ set-go() {
     echo "Switched to Go $v (${GOROOT})"
 }
 
-alias go1.26.8="/opt/go/go1.26.8/bin/go"
-alias go1.27.1="/opt/go/go1.27.1/bin/go"
+alias go1.26.10="/opt/go/go1.26.10/bin/go"
+alias go1.27.3="/opt/go/go1.27.3/bin/go"
 
 # Go Tab 补全
 _set_go_completion() {
     local cur="${COMP_WORDS[COMP_CWORD]}"
-    COMPREPLY=($(compgen -W "1.26.8 1.27.1" -- "$cur"))
+    COMPREPLY=($(compgen -W "1.26.10 1.27.3" -- "$cur"))
 }
 complete -F _set_go_completion set-go
 
@@ -143,7 +148,7 @@ export JAVA_HOME=${JAVA_HOME:-/opt/java/jdk-21}
 export GRADLE_HOME=${GRADLE_HOME:-/opt/gradle}
 export ANDROID_SDK_ROOT=${ANDROID_SDK_ROOT:-/opt/android-sdk}
 export KOTLIN_HOME=${KOTLIN_HOME:-/opt/kotlinc}
-export GOROOT=${GOROOT:-/opt/go/go1.26.8}
+export GOROOT=${GOROOT:-/opt/go/go1.26.10}
 export GOPATH=${GOPATH:-/config/go}
 export NODE_HOME=${NODE_HOME:-/opt/node}
 export FLUTTER_ROOT=${FLUTTER_ROOT:-/opt/flutter}

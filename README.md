@@ -25,11 +25,11 @@
 | :--- | :--- | :--- | :--- |
 | **基础编译** | GCC, G++, Clang, LLVM, LLD, CMake, Ninja, Make | 系统原生 | `gcc`, `clang`, `cmake`, `ninja` 等 |
 | **Java / JVM** | Temurin JDK 8, 17, 21, OpenJDK 25 EA, Gradle 9.7.1 | **JDK 21** | 别名：`java8`, `java17`, `java21`, `java25`<br>切换：`set-java <8\|17\|21\|25>` (支持 Tab 补全) |
-| **Python** | 3.10.21, 3.12.14, 3.13.15, 3.14.7 (Astral uv 隔离环境) | **Python 3.12** | 别名：`python310`, `py312`, `pip314` 等<br>切换：`set-py` / `set-python <版本>` (支持 Tab 补全) |
-| **Golang** | 官方稳定双版本：1.26.8, 1.27.1 | **Go 1.26.8** | 别名：`go1.26.8`, `go1.27.1`<br>切换：`set-go <1.26.8\|1.27.1>` (支持 Tab 补全) |
+| **Python** | 3.10.22, 3.12.15, 3.13.16, 3.14.8 (Astral uv 隔离环境) | **Python 3.12** | 别名：`python310`, `py312`, `pip314` 等<br>切换：`set-py` / `set-python <版本>` (支持 Tab 补全) |
+| **Golang** | 官方稳定双版本：1.26.10, 1.27.3 | **Go 1.26.10** | 别名：`go1.26.10`, `go1.27.3`<br>切换：`set-go <1.26.10\|1.27.3>` (支持 Tab 补全) |
 | **Android 开发** | Android 16 (API 36), cmdline-tools, platform-tools (adb), build-tools:36.0.0, Kotlin 2.4.20 | Android 16 | `adb`, `sdkmanager`, `kotlinc` |
 | **逆向工程** | JADX 1.5.6 (含 GUI), Apktool 3.0.3, Frida, Frida-tools | 最新稳定版 | `jadx`, `jadx-gui`, `apktool`, `frida` |
-| **前端生态** | Node.js 24 LTS, Corepack, pnpm, yarn, TypeScript, Vite, create-vue | Node 24 | `node`, `npm`, `pnpm`, `yarn`, `tsc`, `vite`, `create-vue` |
+| **前端生态** | Node.js 24 LTS (24.22.1), Corepack, pnpm, yarn, TypeScript, Vite, create-vue | Node 24 | `node`, `npm`, `pnpm`, `yarn`, `tsc`, `vite`, `create-vue` |
 | **移动端跨平台**| Flutter SDK (Linux ARM64 stable, 已预缓存 Android 构建) | Stable | `flutter`, `dart` |
 | **交互式计算** | Jupyter 系统级内核（每个 Python 隔离环境均已注册对应 Kernel） | 4 内核齐备 | 打开 `.ipynb` 直接可选 Python 3.10/3.12/3.13/3.14 |
 
@@ -38,7 +38,7 @@
 * **数据科学全家桶**：`numpy`, `pandas`, `scipy`, `matplotlib`
 * **网页分析与爬虫**：`requests`, `beautifulsoup4`, `lxml`, `httpx`
 * **逆向工程与 Hook**：`frida`, `frida-tools`
-* **交互计算与内核**：`ipykernel`, `ipython`
+* **交互计算与内核**：`ipykernel`, `ipython`, `ipywidgets`, `nbformat`, `nbconvert`, `notebook`
 
 ---
 
@@ -53,13 +53,13 @@ set-java 17
 # 2. 切换 Python 版本（输入 set-py 后按两次 Tab 自动提示 310 312 313 314 3.10 3.12 3.13 3.14）
 set-py 314
 
-# 3. 切换 Golang 版本（输入 set-go 后按两次 Tab 自动提示 1.26.8 1.27.1）
-set-go 1.27.1
+# 3. 切换 Golang 版本（输入 set-go 后按两次 Tab 自动提示 1.26.10 1.27.3）
+set-go 1.27.3
 
 # 4. 精确版本直接调用（无需切换全局环境）
 java8 -version
 python310 -c "import frida; print(frida.__version__)"
-go1.27.1 version
+go1.27.3 version
 ```
 
 ---

@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.4
-ARG TOOLCHAIN_VERSION=1.0.0
+ARG TOOLCHAIN_VERSION=1.1.0
 ARG CODE_SERVER_VERSION=4.137.0
 ARG TOOLCHAIN_IMAGE=ghcr.io/scluzlep/dev-toolchain-base:${TOOLCHAIN_VERSION}
 
@@ -25,19 +25,24 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
-# 2. 从已打包好的工具层极速拷入 /opt、Python 运行时库与共享资源
+# 2. 从工具链分层拷入各独立组件 (避免 10G 巨石单层阻塞解压，提升层级并发与独立复用性)
 # ------------------------------------------------------------------------------
-COPY --from=toolchain /opt /opt
+COPY --from=toolchain /opt/java /opt/java
+COPY --from=toolchain /opt/gradle /opt/gradle
+COPY --from=toolchain /opt/go /opt/go
+COPY --from=toolchain /opt/node /opt/node
+COPY --from=toolchain /opt/kotlinc /opt/kotlinc
+COPY --from=toolchain /opt/jadx /opt/jadx
+COPY --from=toolchain /opt/apktool /opt/apktool
+COPY --from=toolchain /opt/android-sdk /opt/android-sdk
+COPY --from=toolchain /opt/flutter /opt/flutter
+COPY --from=toolchain /opt/pyenvs /opt/pyenvs
 COPY --from=toolchain /root/.local /root/.local
 COPY --from=toolchain /usr/local/share/jupyter /usr/local/share/jupyter
 COPY --from=toolchain /bin/uv /bin/uvx /bin/
 
-# 权限放行：使非 root 用户 (abc) 可遍历执行 /root 下的 Python 解释器，放行 Git 与目录权限
-RUN chmod 755 /root && \
-    chmod -R a+rX /root/.local && \
-    chmod -R a+rwX /opt/flutter && \
-    chmod -R a+rwX /opt/pyenvs && \
-    chmod 777 /usr/local/bin && \
+# 权限放行 (Flutter 与 Pyenvs 权限已在底座构建期预置，严禁在此执行 chmod -R 触发 4.5G OverlayFS copy-up 重复层)
+RUN chmod 777 /usr/local/bin && \
     git config --system --add safe.directory "*"
 
 # ------------------------------------------------------------------------------
@@ -51,10 +56,12 @@ ln -sf /opt/pyenvs/py312/bin/python3 /usr/local/bin/python3
 ln -sf /opt/pyenvs/py312/bin/pip /usr/local/bin/pip
 ln -sf /opt/pyenvs/py312/bin/pip3 /usr/local/bin/pip3
 ln -sf /opt/pyenvs/py312/bin/ipython /usr/local/bin/ipython
+ln -sf /opt/pyenvs/py312/bin/jupyter /usr/local/bin/jupyter
 for ver in 310 312 313 314; do
     ln -sf /opt/pyenvs/py${ver}/bin/python /usr/local/bin/python${ver}
     ln -sf /opt/pyenvs/py${ver}/bin/python /usr/local/bin/py${ver}
     ln -sf /opt/pyenvs/py${ver}/bin/pip /usr/local/bin/pip${ver}
+    ln -sf /opt/pyenvs/py${ver}/bin/jupyter /usr/local/bin/jupyter${ver}
 done
 
 # Java 默认 (JDK 21) 与多版本别名
@@ -65,11 +72,11 @@ for ver in 8 17 21 25; do
     ln -sf /opt/java/jdk-${ver}/bin/java /usr/local/bin/java${ver}
 done
 
-# Go 默认 (1.26.8) 与多版本别名
-ln -sf /opt/go/go1.26.8/bin/go /usr/local/bin/go
-ln -sf /opt/go/go1.26.8/bin/gofmt /usr/local/bin/gofmt
-ln -sf /opt/go/go1.26.8/bin/go /usr/local/bin/go1.26.8
-ln -sf /opt/go/go1.27.1/bin/go /usr/local/bin/go1.27.1
+# Go 默认 (1.26.10) 与多版本别名
+ln -sf /opt/go/go1.26.10/bin/go /usr/local/bin/go
+ln -sf /opt/go/go1.26.10/bin/gofmt /usr/local/bin/gofmt
+ln -sf /opt/go/go1.26.10/bin/go /usr/local/bin/go1.26.10
+ln -sf /opt/go/go1.27.3/bin/go /usr/local/bin/go1.27.3
 
 # Node.js & 前端全家桶
 ln -sf /opt/node/bin/node /usr/local/bin/node
@@ -109,7 +116,7 @@ ENV JAVA_HOME=/opt/java/jdk-21 \
     GRADLE_HOME=/opt/gradle \
     ANDROID_SDK_ROOT=/opt/android-sdk \
     KOTLIN_HOME=/opt/kotlinc \
-    GOROOT=/opt/go/go1.26.8 \
+    GOROOT=/opt/go/go1.26.10 \
     GOPATH=/config/go \
     NODE_HOME=/opt/node \
     FLUTTER_ROOT=/opt/flutter \
@@ -118,7 +125,7 @@ ENV JAVA_HOME=/opt/java/jdk-21 \
 ENV PATH=/opt/pyenvs/py312/bin:${JAVA_HOME}/bin:${GRADLE_HOME}/bin:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${KOTLIN_HOME}/bin:${GOROOT}/bin:${GOPATH}/bin:${NODE_HOME}/bin:${FLUTTER_ROOT}/bin:${PATH}
 
 # 同步写入 /etc/environment 保证 PAM/cron/sudo/su 具有完整 PATH
-RUN echo 'PATH="/opt/pyenvs/py312/bin:/opt/java/jdk-21/bin:/opt/gradle/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/kotlinc/bin:/opt/go/go1.26.8/bin:/config/go/bin:/opt/node/bin:/opt/flutter/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
+RUN echo 'PATH="/opt/pyenvs/py312/bin:/opt/java/jdk-21/bin:/opt/gradle/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/kotlinc/bin:/opt/go/go1.26.10/bin:/config/go/bin:/opt/node/bin:/opt/flutter/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
 
 # ------------------------------------------------------------------------------
 # 5. 配置多版本切换函数、别名及 TAB 自动补全
