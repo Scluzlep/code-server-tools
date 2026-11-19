@@ -1,169 +1,33 @@
 # syntax=docker/dockerfile:1.4
-ARG TOOLCHAIN_VERSION=1.1.0
-ARG CODE_SERVER_VERSION=4.137.0
-ARG TOOLCHAIN_IMAGE=ghcr.io/scluzlep/dev-toolchain-base:${TOOLCHAIN_VERSION}
+# Heavy tools and shell live in the immutable parent image. code-server is last.
+ARG TOOLCHAIN_IMAGE
+FROM ${TOOLCHAIN_IMAGE}
 
-FROM ${TOOLCHAIN_IMAGE} AS toolchain
-
-FROM linuxserver/code-server:${CODE_SERVER_VERSION}
-
+ARG CODE_SERVER_VERSION=4.145.2
 ARG TARGETARCH=arm64
+
 ENV DEBIAN_FRONTEND=noninteractive \
-    SHELL=/bin/bash \
-    LANG=C.UTF-8 \
-    LC_ALL=C.UTF-8 \
+    HOME=/config \
+    SHELL=/usr/bin/zsh \
+    XDG_CONFIG_HOME=/config/.config \
+    XDG_DATA_HOME=/config/.local/share \
+    XDG_STATE_HOME=/config/.local/state \
     EXTENSIONS_GALLERY='{"serviceUrl":"https://marketplace.visualstudio.com/_apis/public/gallery","cacheUrl":"https://vscode.blob.core.windows.net/gallery/index","itemUrl":"https://marketplace.visualstudio.com/items","resourceUrlTemplate":"https://{publisher}.vscode-unpkg.net/{publisher}/{name}/{version}/{path}"}'
 
-# ------------------------------------------------------------------------------
-# 1. 安装基础运行时动态链接库 & 编译基础依赖
-# ------------------------------------------------------------------------------
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc g++ clang llvm lld cmake ninja-build \
-    curl wget git p7zip-full unzip zip ca-certificates jq \
-    libssl-dev zlib1g-dev libreadline-dev libsqlite3-dev \
-    libxml2 libxslt1.1 \
-    && apt-get clean && rm -rf /var/lib/apt/lists/*
+COPY scripts/code-server-entrypoint.sh /usr/local/bin/code-server-entrypoint
+COPY scripts/launch-code-server.sh /usr/local/bin/launch-code-server
+RUN chmod 0755 /usr/local/bin/code-server-entrypoint /usr/local/bin/launch-code-server
 
-# ------------------------------------------------------------------------------
-# 2. 从工具链分层拷入各独立组件 (避免 10G 巨石单层阻塞解压，提升层级并发与独立复用性)
-# ------------------------------------------------------------------------------
-COPY --from=toolchain /opt/java /opt/java
-COPY --from=toolchain /opt/gradle /opt/gradle
-COPY --from=toolchain /opt/go /opt/go
-COPY --from=toolchain /opt/node /opt/node
-COPY --from=toolchain /opt/kotlinc /opt/kotlinc
-COPY --from=toolchain /opt/jadx /opt/jadx
-COPY --from=toolchain /opt/apktool /opt/apktool
-COPY --from=toolchain /opt/android-sdk /opt/android-sdk
-COPY --from=toolchain /opt/flutter /opt/flutter
-COPY --from=toolchain /opt/pyenvs /opt/pyenvs
-COPY --from=toolchain /root/.local /root/.local
-COPY --from=toolchain /usr/local/share/jupyter /usr/local/share/jupyter
-COPY --from=toolchain /bin/uv /bin/uvx /bin/
+# This is deliberately the FINAL filesystem layer. Upstream IDE updates cannot
+# invalidate the Debian + 15GB toolchain + shell layers underneath.
+RUN set -eux; \
+    curl -fL --retry 5 --retry-delay 3 \
+      "https://github.com/coder/code-server/releases/download/v${CODE_SERVER_VERSION}/code-server-${CODE_SERVER_VERSION}-linux-${TARGETARCH}.tar.gz" \
+      -o /tmp/code-server.tar.gz; \
+    mkdir -p /opt/code-server; \
+    tar -xzf /tmp/code-server.tar.gz -C /opt/code-server --strip-components=1; \
+    rm -f /tmp/code-server.tar.gz; \
+    ln -sf /opt/code-server/bin/code-server /usr/local/bin/code-server
 
-# 权限放行 (Flutter 与 Pyenvs 权限已在底座构建期预置，严禁在此执行 chmod -R 触发 4.5G OverlayFS copy-up 重复层)
-RUN chmod 777 /usr/local/bin && \
-    git config --system --add safe.directory "*"
-
-# ------------------------------------------------------------------------------
-# 3. 创建系统全局标准软链接 (/usr/local/bin 保障任何用户、终端、脚本均可直接执行)
-# ------------------------------------------------------------------------------
-RUN <<'EOF'
-set -e
-# Python 默认 (3.12) 与多版本别名
-ln -sf /opt/pyenvs/py312/bin/python /usr/local/bin/python
-ln -sf /opt/pyenvs/py312/bin/python3 /usr/local/bin/python3
-ln -sf /opt/pyenvs/py312/bin/pip /usr/local/bin/pip
-ln -sf /opt/pyenvs/py312/bin/pip3 /usr/local/bin/pip3
-ln -sf /opt/pyenvs/py312/bin/ipython /usr/local/bin/ipython
-ln -sf /opt/pyenvs/py312/bin/jupyter /usr/local/bin/jupyter
-for ver in 310 312 313 314; do
-    ln -sf /opt/pyenvs/py${ver}/bin/python /usr/local/bin/python${ver}
-    ln -sf /opt/pyenvs/py${ver}/bin/python /usr/local/bin/py${ver}
-    ln -sf /opt/pyenvs/py${ver}/bin/pip /usr/local/bin/pip${ver}
-    ln -sf /opt/pyenvs/py${ver}/bin/jupyter /usr/local/bin/jupyter${ver}
-done
-
-# Java 默认 (JDK 21) 与多版本别名
-ln -sf /opt/java/jdk-21/bin/java /usr/local/bin/java
-ln -sf /opt/java/jdk-21/bin/javac /usr/local/bin/javac
-ln -sf /opt/java/jdk-21/bin/jar /usr/local/bin/jar
-for ver in 8 17 21 25; do
-    ln -sf /opt/java/jdk-${ver}/bin/java /usr/local/bin/java${ver}
-done
-
-# Go 默认 (1.26.10) 与多版本别名
-ln -sf /opt/go/go1.26.10/bin/go /usr/local/bin/go
-ln -sf /opt/go/go1.26.10/bin/gofmt /usr/local/bin/gofmt
-ln -sf /opt/go/go1.26.10/bin/go /usr/local/bin/go1.26.10
-ln -sf /opt/go/go1.27.3/bin/go /usr/local/bin/go1.27.3
-
-# Node.js & 前端全家桶
-ln -sf /opt/node/bin/node /usr/local/bin/node
-ln -sf /opt/node/bin/npm /usr/local/bin/npm
-ln -sf /opt/node/bin/npx /usr/local/bin/npx
-ln -sf /opt/node/bin/pnpm /usr/local/bin/pnpm
-ln -sf /opt/node/bin/yarn /usr/local/bin/yarn
-ln -sf /opt/node/bin/tsc /usr/local/bin/tsc
-ln -sf /opt/node/bin/vite /usr/local/bin/vite
-ln -sf /opt/node/bin/create-vue /usr/local/bin/create-vue
-
-# Kotlin & Gradle
-ln -sf /opt/kotlinc/bin/kotlinc /usr/local/bin/kotlinc
-ln -sf /opt/kotlinc/bin/kotlin /usr/local/bin/kotlin
-ln -sf /opt/gradle/bin/gradle /usr/local/bin/gradle
-
-# Android SDK
-ln -sf /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager /usr/local/bin/sdkmanager
-ln -sf /opt/android-sdk/cmdline-tools/latest/bin/avdmanager /usr/local/bin/avdmanager
-ln -sf /opt/android-sdk/platform-tools/adb /usr/local/bin/adb
-
-# Flutter & Dart
-ln -sf /opt/flutter/bin/flutter /usr/local/bin/flutter
-ln -sf /opt/flutter/bin/dart /usr/local/bin/dart
-
-# 逆向工具 JADX & Apktool
-ln -sf /opt/jadx/bin/jadx /usr/local/bin/jadx
-ln -sf /opt/jadx/bin/jadx-gui /usr/local/bin/jadx-gui
-ln -sf /opt/apktool/apktool /usr/local/bin/apktool
-ln -sf /opt/apktool/apktool.jar /usr/local/bin/apktool.jar
-EOF
-
-# ------------------------------------------------------------------------------
-# 4. 注入系统环境变量与全局 PATH
-# ------------------------------------------------------------------------------
-ENV JAVA_HOME=/opt/java/jdk-21 \
-    GRADLE_HOME=/opt/gradle \
-    ANDROID_SDK_ROOT=/opt/android-sdk \
-    KOTLIN_HOME=/opt/kotlinc \
-    GOROOT=/opt/go/go1.26.10 \
-    GOPATH=/config/go \
-    NODE_HOME=/opt/node \
-    FLUTTER_ROOT=/opt/flutter \
-    PYENV_ROOT=/opt/pyenvs
-
-ENV PATH=/opt/pyenvs/py312/bin:${JAVA_HOME}/bin:${GRADLE_HOME}/bin:${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${KOTLIN_HOME}/bin:${GOROOT}/bin:${GOPATH}/bin:${NODE_HOME}/bin:${FLUTTER_ROOT}/bin:${PATH}
-
-# 同步写入 /etc/environment 保证 PAM/cron/sudo/su 具有完整 PATH
-RUN echo 'PATH="/opt/pyenvs/py312/bin:/opt/java/jdk-21/bin:/opt/gradle/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/opt/kotlinc/bin:/opt/go/go1.26.10/bin:/config/go/bin:/opt/node/bin:/opt/flutter/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"' > /etc/environment
-
-# ------------------------------------------------------------------------------
-# 5. 配置多版本切换函数、别名及 TAB 自动补全
-# ------------------------------------------------------------------------------
-COPY scripts/dev-env.sh /etc/profile.d/dev-env.sh
-RUN chmod +x /etc/profile.d/dev-env.sh && \
-    sed -i '1s|^|[ -f /etc/profile.d/dev-env.sh ] \&\& . /etc/profile.d/dev-env.sh\n|' /etc/bash.bashrc && \
-    echo '[ -f /etc/profile.d/dev-env.sh ] && . /etc/profile.d/dev-env.sh' >> /etc/profile
-
-# s6-overlay 初始化脚本：确保持久化挂载的 /config/.bashrc 自动加载 dev-env.sh 并修正目录权限
-RUN mkdir -p /etc/cont-init.d /custom-cont-init.d && \
-    cat <<'EOF' > /etc/cont-init.d/99-dev-env-init
-#!/usr/bin/with-contenv bash
-if [ -d "/config" ]; then
-    touch /config/.bashrc
-    if ! grep -q "/etc/profile.d/dev-env.sh" /config/.bashrc; then
-        echo "[ -f /etc/profile.d/dev-env.sh ] && source /etc/profile.d/dev-env.sh" >> /config/.bashrc
-    fi
-    mkdir -p /config/go
-    chown -R abc:abc /config/go 2>/dev/null || true
-    mkdir -p /config/data/User
-    if [ ! -f "/config/data/User/settings.json" ] && [ -f "/defaults/data/User/settings.json" ]; then
-        cp /defaults/data/User/settings.json /config/data/User/settings.json
-        chown -R abc:abc /config/data/User 2>/dev/null || true
-    fi
-fi
-EOF
-RUN cp /etc/cont-init.d/99-dev-env-init /custom-cont-init.d/99-dev-env-init && \
-    chmod +x /etc/cont-init.d/99-dev-env-init /custom-cont-init.d/99-dev-env-init
-
-# ------------------------------------------------------------------------------
-# 6. VS Code 预置配置 (代理与默认终端配置)
-# ------------------------------------------------------------------------------
-RUN mkdir -p /defaults/data/User && \
-    cat <<'EOF' > /defaults/data/User/settings.json
-{
-  "http.proxy": "http://host.docker.internal:7897",
-  "http.proxyStrictSSL": false,
-  "terminal.integrated.defaultProfile.linux": "bash"
-}
-EOF
+EXPOSE 8443
+ENTRYPOINT ["/usr/local/bin/code-server-entrypoint"]

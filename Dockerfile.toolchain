@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1.4
-FROM ubuntu:24.04
+FROM debian:13-slim
 
 # 目标架构为 ARM64，无转译原生编译
 ARG TARGETARCH=arm64
@@ -11,24 +11,24 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ------------------------------------------------------------------------------
 # 接收版本参数 (支持构建时覆盖，默认来自 .env)
 # ------------------------------------------------------------------------------
-ARG TOOLCHAIN_VERSION=1.1.0
-ARG GRADLE_VERSION=9.7.1
+ARG TOOLCHAIN_VERSION=1.2.0
+ARG GRADLE_VERSION=9.9.1
 ARG JDK25_URL="https://api.adoptium.net/v3/binary/latest/25/ga/linux/aarch64/jdk/hotspot/normal/eclipse"
 
 ARG PYTHON_VERSION_310=3.10.22
-ARG PYTHON_VERSION_312=3.12.15
-ARG PYTHON_VERSION_313=3.13.16
-ARG PYTHON_VERSION_314=3.14.8
+ARG PYTHON_VERSION_312=3.12.16
+ARG PYTHON_VERSION_313=3.13.18
+ARG PYTHON_VERSION_314=3.14.10
 
-ARG GO_VERSION_1=1.26.10
-ARG GO_VERSION_2=1.27.3
+ARG GO_VERSION_1=1.26.11
+ARG GO_VERSION_2=1.27.4
 
 ARG ANDROID_CMDLINE_TOOLS_VERSION=11076708
 ARG ANDROID_PLATFORM=android-36
 ARG ANDROID_BUILD_TOOLS=36.0.0
 
-ARG KOTLIN_VERSION=2.4.20
-ARG JADX_VERSION=1.5.6
+ARG KOTLIN_VERSION=2.4.21
+ARG JADX_VERSION=1.5.7
 ARG APKTOOL_VERSION=3.0.3
 
 # ------------------------------------------------------------------------------
@@ -40,6 +40,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     pkg-config libssl-dev zlib1g-dev libbz2-dev libreadline-dev \
     libsqlite3-dev libncursesw5-dev xz-utils tk-dev \
     libxml2-dev libxslt1-dev libxmlsec1-dev libffi-dev liblzma-dev jq \
+    vim zsh sudo passwd gosu dbus dbus-user-session gnome-keyring libsecret-1-0 \
+    libatomic1 libstdc++6 procps locales \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
@@ -71,7 +73,8 @@ RUN mkdir -p ${JAVA_ROOT}/jdk-8 ${JAVA_ROOT}/jdk-17 ${JAVA_ROOT}/jdk-21 ${JAVA_R
 # 3. 多版本 Python (Astral uv + 数据科学 + 爬虫 + Frida 逆向 + Jupyter 内核)
 # ------------------------------------------------------------------------------
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
-ENV PYENV_ROOT=/opt/pyenvs
+ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    PYENV_ROOT=/opt/pyenvs
 RUN mkdir -p ${PYENV_ROOT} && \
     uv python install ${PYTHON_VERSION_310} ${PYTHON_VERSION_312} ${PYTHON_VERSION_313} ${PYTHON_VERSION_314} && \
     uv venv --seed ${PYENV_ROOT}/py310 --python ${PYTHON_VERSION_310} && \
@@ -87,8 +90,6 @@ RUN mkdir -p ${PYENV_ROOT} && \
         frida frida-tools; \
     done && \
     chmod -R a+rwX ${PYENV_ROOT} && \
-    chmod 755 /root && \
-    chmod -R a+rX /root/.local && \
     rm -rf /root/.cache
 
 # 注册 Jupyter 系统内核
@@ -137,7 +138,7 @@ RUN mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools && \
     curl -fsSL --retry 5 --retry-delay 3 "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" -o /opt/apktool/apktool.jar && \
     chmod +x /opt/apktool/apktool /opt/apktool/apktool.jar
 
-ARG NODE_VERSION=24.22.1
+ARG NODE_VERSION=24.22.3
 
 # ------------------------------------------------------------------------------
 # 6. Node.js LTS、Corepack & 前端工具生态 (/opt/node)
@@ -171,3 +172,65 @@ COPY .env /etc/dev-toolchain.env
 LABEL org.opencontainers.image.title="dev-toolchain-base" \
       org.opencontainers.image.version="${TOOLCHAIN_VERSION}" \
       org.opencontainers.image.description="ARM64 heavy development toolchain base image"
+
+
+# Shell and tool aliases belong to the pinned toolchain layer, not to code-server.
+ENV JAVA_HOME=/opt/java/jdk-21 \
+    GOROOT=/opt/go/go${GO_VERSION_1} \
+    GOPATH=/config/go \
+    NODE_HOME=/opt/node \
+    FLUTTER_ROOT=/opt/flutter \
+    SHELL=/usr/bin/zsh \
+    HOME=/config \
+    XDG_CONFIG_HOME=/config/.config \
+    XDG_DATA_HOME=/config/.local/share \
+    XDG_STATE_HOME=/config/.local/state
+ENV PATH=/opt/pyenvs/py312/bin:/opt/java/jdk-21/bin:/opt/gradle/bin:/opt/go/go${GO_VERSION_1}/bin:/opt/node/bin:/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/usr/local/bin:${PATH}
+
+RUN set -eux; \
+    ln -sf /opt/pyenvs/py312/bin/python /usr/local/bin/python; \
+    ln -sf /opt/pyenvs/py312/bin/python3 /usr/local/bin/python3; \
+    ln -sf /opt/pyenvs/py312/bin/pip /usr/local/bin/pip; \
+    ln -sf /opt/pyenvs/py312/bin/jupyter /usr/local/bin/jupyter; \
+    for ver in 310 312 313 314; do \
+      ln -sf /opt/pyenvs/py$ver/bin/python /usr/local/bin/python$ver; \
+      ln -sf /opt/pyenvs/py$ver/bin/python /usr/local/bin/py$ver; \
+      ln -sf /opt/pyenvs/py$ver/bin/pip /usr/local/bin/pip$ver; \
+    done; \
+    for ver in 8 17 21 25; do \
+      ln -sf /opt/java/jdk-$ver/bin/java /usr/local/bin/java$ver; \
+    done; \
+    ln -sf /opt/java/jdk-21/bin/java /usr/local/bin/java; \
+    ln -sf /opt/java/jdk-21/bin/javac /usr/local/bin/javac; \
+    ln -sf /opt/go/go${GO_VERSION_1}/bin/go /usr/local/bin/go; \
+    ln -sf /opt/go/go${GO_VERSION_1}/bin/gofmt /usr/local/bin/gofmt; \
+    ln -sf /opt/go/go${GO_VERSION_1}/bin/go /usr/local/bin/go${GO_VERSION_1}; \
+    ln -sf /opt/go/go${GO_VERSION_2}/bin/go /usr/local/bin/go${GO_VERSION_2}; \
+    for bin in node npm npx pnpm yarn tsc vite create-vue; do \
+      ln -sf /opt/node/bin/$bin /usr/local/bin/$bin; \
+    done; \
+    ln -sf /opt/gradle/bin/gradle /usr/local/bin/gradle; \
+    ln -sf /opt/kotlinc/bin/kotlinc /usr/local/bin/kotlinc; \
+    ln -sf /opt/android-sdk/platform-tools/adb /usr/local/bin/adb; \
+    ln -sf /opt/android-sdk/cmdline-tools/latest/bin/sdkmanager /usr/local/bin/sdkmanager; \
+    ln -sf /opt/flutter/bin/flutter /usr/local/bin/flutter; \
+    ln -sf /opt/flutter/bin/dart /usr/local/bin/dart; \
+    ln -sf /opt/jadx/bin/jadx /usr/local/bin/jadx; \
+    ln -sf /opt/apktool/apktool /usr/local/bin/apktool; \
+    ln -sf /opt/apktool/apktool.jar /usr/local/bin/apktool.jar
+
+# OMZ/P10k are installed once in the reusable toolchain. No runtime git clone.
+RUN set -eux; \
+    git clone --depth=1 https://github.com/ohmyzsh/ohmyzsh.git /opt/oh-my-zsh; \
+    git clone --depth=1 https://github.com/romkatv/powerlevel10k.git /opt/oh-my-zsh/custom/themes/powerlevel10k; \
+    git clone --depth=1 https://github.com/zsh-users/zsh-autosuggestions.git /opt/oh-my-zsh/custom/plugins/zsh-autosuggestions; \
+    git clone --depth=1 https://github.com/zsh-users/zsh-syntax-highlighting.git /opt/oh-my-zsh/custom/plugins/zsh-syntax-highlighting; \
+    useradd --create-home --home-dir /config --shell /usr/bin/zsh --uid 1000 abc; \
+    usermod -aG sudo abc; \
+    printf 'abc ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/90-abc; \
+    chmod 0440 /etc/sudoers.d/90-abc
+
+COPY scripts/dev-env.sh /etc/profile.d/dev-env.sh
+COPY scripts/zshrc /etc/skel/.zshrc
+COPY scripts/p10k.zsh /etc/skel/.p10k.zsh
+RUN chmod 0644 /etc/profile.d/dev-env.sh /etc/skel/.zshrc /etc/skel/.p10k.zsh

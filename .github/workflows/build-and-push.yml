@@ -1,104 +1,104 @@
 name: Build and Push Code-Server
 
 on:
+  push:
+    branches: [main]
   workflow_dispatch:
     inputs:
       rebuild_toolchain:
-        description: '是否重新构建重型基础工具链 (dev-toolchain-base)?'
+        description: Rebuild dev-toolchain-base even if the tag exists
         required: false
         type: boolean
         default: false
       force_runner:
-        description: '是否强制构建并发布最终 Runner 镜像 (code-server-withtools)?'
+        description: Rebuild code-server regardless of upstream tag
         required: false
         type: boolean
         default: false
   schedule:
-    # 每天 UTC 02:00 (北京时间 10:00) 定时检测上游更新
     - cron: '0 2 * * *'
+
+permissions:
+  contents: read
+  packages: read
 
 env:
   REGISTRY: ghcr.io
 
 jobs:
-  # ----------------------------------------------------------------------------
-  # Job 0: 环境初始化与上游更新检测
-  # ----------------------------------------------------------------------------
   check-update:
     runs-on: ubuntu-24.04-arm
     outputs:
       should_build_toolchain: ${{ steps.decide.outputs.should_build_toolchain }}
       should_build_runner: ${{ steps.decide.outputs.should_build_runner }}
       upstream_tag: ${{ steps.upstream.outputs.latest_upstream_tag }}
-      short_tag: ${{ steps.upstream.outputs.short_upstream_tag }}
-      upstream_digest: ${{ steps.upstream.outputs.latest_upstream_digest }}
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Load .env configuration
+      - uses: actions/checkout@v4
+      - name: Load version settings and normalized repository owner
         run: |
-          grep -v '^#' .env | grep '=' >> $GITHUB_ENV
-
-      - name: Check upstream code-server release
+          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
+          echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - name: Read upstream release
         id: upstream
-        run: |
-          chmod +x scripts/check-upstream.sh
-          ./scripts/check-upstream.sh
-
-      - name: Decide build actions
+        run: bash scripts/check-upstream.sh
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build only when a published tag is missing or explicitly requested
         id: decide
+        env:
+          EVENT: ${{ github.event_name }}
+          REBUILD_TOOLCHAIN: ${{ inputs.rebuild_toolchain }}
+          FORCE_RUNNER: ${{ inputs.force_runner }}
+          UPSTREAM_TAG: ${{ steps.upstream.outputs.latest_upstream_tag }}
         run: |
-          # 1. 工具链严格限制：仅在手动勾选 rebuild_toolchain 时构建
-          if [ "${{ github.event.inputs.rebuild_toolchain }}" = "true" ]; then
-            echo "should_build_toolchain=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_build_toolchain=false" >> "$GITHUB_OUTPUT"
+          toolchain_ref="$REGISTRY/$REGISTRY_OWNER/$TOOLCHAIN_IMAGE_NAME:$TOOLCHAIN_VERSION"
+          runner_ref="$REGISTRY/$REGISTRY_OWNER/$RUNNER_IMAGE_NAME:$UPSTREAM_TAG"
+          toolchain_exists=false
+          runner_exists=false
+          if docker buildx imagetools inspect "$toolchain_ref" >/dev/null 2>&1; then toolchain_exists=true; fi
+          if docker buildx imagetools inspect "$runner_ref" >/dev/null 2>&1; then runner_exists=true; fi
+          build_toolchain=false
+          build_runner=false
+          if [ "$toolchain_exists" != true ] || [ "$REBUILD_TOOLCHAIN" = true ]; then
+            build_toolchain=true
           fi
-
-          # 2. 判断 Runner 是否需要构建
-          if [ "${{ github.event.inputs.rebuild_toolchain }}" = "true" ] || [ "${{ github.event.inputs.force_runner }}" = "true" ]; then
-            echo "should_build_runner=true" >> "$GITHUB_OUTPUT"
-          elif [ "${{ github.event_name }}" = "schedule" ]; then
-            echo "should_build_runner=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "should_build_runner=true" >> "$GITHUB_OUTPUT"
+          if [ "$EVENT" = push ] || [ "$EVENT" = workflow_dispatch ] ||
+             [ "$runner_exists" != true ] || [ "$build_toolchain" = true ] ||
+             [ "$FORCE_RUNNER" = true ]; then
+            build_runner=true
           fi
+          echo "should_build_toolchain=$build_toolchain" >> "$GITHUB_OUTPUT"
+          echo "should_build_runner=$build_runner" >> "$GITHUB_OUTPUT"
+          echo "toolchain=$toolchain_ref exists=$toolchain_exists rebuild=$build_toolchain"
+          echo "runner=$runner_ref exists=$runner_exists rebuild=$build_runner"
 
-  # ----------------------------------------------------------------------------
-  # Job 1: 重型工具链镜像构建 (仅在手动勾选 rebuild_toolchain 时执行，原生 ARM64)
-  # ----------------------------------------------------------------------------
   build-toolchain:
-    needs: [check-update]
+    needs: check-update
     if: needs.check-update.outputs.should_build_toolchain == 'true'
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
       packages: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Load .env configuration
+      - uses: actions/checkout@v4
+      - name: Load versions and repository owner
         run: |
-          grep -v '^#' .env | grep '=' >> $GITHUB_ENV
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
+          echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and Push Toolchain Base (Native ARM64)
+      - name: Build versioned Debian 13 toolchain
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile.toolchain
+          file: Dockerfile.toolchain
           platforms: linux/arm64
           push: true
           build-args: |
@@ -119,29 +119,23 @@ jobs:
             APKTOOL_VERSION=${{ env.APKTOOL_VERSION }}
             NODE_VERSION=${{ env.NODE_VERSION }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:${{ env.TOOLCHAIN_VERSION }}
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:latest
+            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:${{ env.TOOLCHAIN_VERSION }}
+            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:latest
           cache-from: type=gha,scope=toolchain-arm64
           cache-to: type=gha,mode=max,scope=toolchain-arm64
-
-      - name: Record and Release Toolchain Version with .env snapshot
+      - name: Publish toolchain release with version snapshot
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          mkdir -p versions
-          cp .env "versions/toolchain-v${{ env.TOOLCHAIN_VERSION }}.env"
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git tag -a "toolchain-v${{ env.TOOLCHAIN_VERSION }}" -m "Release dev-toolchain-base v${{ env.TOOLCHAIN_VERSION }}" || true
-          git push origin "toolchain-v${{ env.TOOLCHAIN_VERSION }}" || true
-          gh release create "toolchain-v${{ env.TOOLCHAIN_VERSION }}" \
-            --title "dev-toolchain-base v${{ env.TOOLCHAIN_VERSION }}" \
-            --notes-file .env \
-            "versions/toolchain-v${{ env.TOOLCHAIN_VERSION }}.env" || echo "Release tag already exists"
+          tag="toolchain-v$TOOLCHAIN_VERSION"
+          if ! gh release view "$tag" >/dev/null 2>&1; then
+            gh release create "$tag" \
+              --target "$GITHUB_SHA" \
+              --title "dev-toolchain-base v$TOOLCHAIN_VERSION" \
+              --notes-file .env \
+              "versions/toolchain-v$TOOLCHAIN_VERSION.env"
+          fi
 
-  # ----------------------------------------------------------------------------
-  # Job 2: 组装 Final Runner 镜像 
-  # ----------------------------------------------------------------------------
   build-runner:
     needs: [check-update, build-toolchain]
     if: |
@@ -152,40 +146,31 @@ jobs:
     permissions:
       contents: read
       packages: write
-
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Load .env configuration
+      - uses: actions/checkout@v4
+      - name: Load versions and repository owner
         run: |
-          grep -v '^#' .env | grep '=' >> $GITHUB_ENV
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
+          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
+          echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
         with:
-          registry: ${{ env.REGISTRY }}
+          registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and Push Final Runner Image (Native ARM64)
+      - name: Build standalone code-server on top of shared toolchain
         uses: docker/build-push-action@v6
         with:
           context: .
-          file: ./Dockerfile
+          file: Dockerfile
           platforms: linux/arm64
           push: true
           build-args: |
-            CODE_SERVER_VERSION=${{ needs.check-update.outputs.upstream_tag || env.CODE_SERVER_VERSION }}
-            TOOLCHAIN_VERSION=${{ env.TOOLCHAIN_VERSION }}
-            TOOLCHAIN_IMAGE=${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:${{ env.TOOLCHAIN_VERSION }}
+            CODE_SERVER_VERSION=${{ needs.check-update.outputs.upstream_tag }}
+            TOOLCHAIN_IMAGE=ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:${{ env.TOOLCHAIN_VERSION }}
           tags: |
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:${{ needs.check-update.outputs.upstream_tag || env.CODE_SERVER_VERSION }}
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:${{ needs.check-update.outputs.short_tag || env.CODE_SERVER_VERSION }}
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:latest
-            ${{ env.REGISTRY }}/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:${{ github.sha }}
+            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:${{ needs.check-update.outputs.upstream_tag }}
+            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:latest
+            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:${{ github.sha }}
           cache-from: type=gha,scope=runner-arm64
           cache-to: type=gha,mode=max,scope=runner-arm64

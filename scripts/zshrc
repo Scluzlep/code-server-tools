@@ -1,0 +1,7 @@
+export ZSH=/opt/oh-my-zsh
+ZSH_THEME="powerlevel10k/powerlevel10k"
+plugins=(git zsh-autosuggestions zsh-syntax-highlighting z extract)
+DISABLE_AUTO_UPDATE="true"
+source "$ZSH/oh-my-zsh.sh"
+[[ -f /etc/profile.d/dev-env.sh ]] && source /etc/profile.d/dev-env.sh
+[[ -f "$HOME/.p10k.zsh" ]] && source "$HOME/.p10k.zsh"
