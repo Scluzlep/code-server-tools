@@ -16,6 +16,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 COPY scripts/code-server-entrypoint.sh /usr/local/bin/code-server-entrypoint
 COPY scripts/launch-code-server.sh /usr/local/bin/launch-code-server
+# Use the corrected default without rebuilding the 15GB toolchain image.
+# The entrypoint still copies this file only when /config/.p10k.zsh is absent.
+COPY scripts/p10k.zsh /etc/skel/.p10k.zsh
 RUN chmod 0755 /usr/local/bin/code-server-entrypoint /usr/local/bin/launch-code-server
 
 # This is deliberately the FINAL filesystem layer. Upstream IDE updates cannot
