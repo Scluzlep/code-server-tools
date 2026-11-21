@@ -32,5 +32,10 @@ RUN set -eux; \
     rm -f /tmp/code-server.tar.gz; \
     ln -sf /opt/code-server/bin/code-server /usr/local/bin/code-server
 
+# Keep Hub host-header compatibility in the small runner layer only.
+# Dynamic agy port, no extra public port or 1Panel compose changes.
+COPY scripts/patch-antigravity-proxy.cjs /usr/local/lib/patch-antigravity-proxy.cjs
+RUN node /usr/local/lib/patch-antigravity-proxy.cjs
+
 EXPOSE 8443
 ENTRYPOINT ["/usr/local/bin/code-server-entrypoint"]
