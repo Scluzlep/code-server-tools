@@ -59,6 +59,7 @@ const injected = [
   'function rewriteAntigravityHtml(proxyRes, req) {',
   '  const port = antigravityProxyPort(req);',
   '  if (!port || !agyHubPorts.has(port)) return;',
+  '  if (req.method === "HEAD" || proxyRes.statusCode !== 200) return;',
   '  if (!/^text\\/html(?:\\s*;|$)/i.test(proxyRes.headers["content-type"] || "")) return;',
   '  const encoding = (proxyRes.headers["content-encoding"] || "identity").toLowerCase();',
   '  if (encoding !== "identity" && encoding !== "gzip") return;',
