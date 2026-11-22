@@ -202,6 +202,14 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/agyshell "$IMG" --check
           docker run --rm --entrypoint /usr/local/bin/ttyd "$IMG" --version
           docker run --rm --entrypoint tmux "$IMG" -V
+          docker run --rm --entrypoint bash "$IMG" -lc '
+            sw="$(find /opt/code-server -type f -path "*/vs/workbench/contrib/webview/browser/pre/service-worker.js")"
+            test -n "$sw"
+            grep -q "300_000" "$sw"
+            px="$(find /opt/code-server -type f -path "*/out/node/proxy.js")"
+            test -n "$px"
+            grep -q "__agyOrigPostMessage" "$px"
+          '
 
           cleanup() {
             docker rm -f agy-ci-verify >/dev/null 2>&1 || true
