@@ -21,6 +21,24 @@ COPY scripts/launch-code-server.sh /usr/local/bin/launch-code-server
 COPY scripts/p10k.zsh /etc/skel/.p10k.zsh
 RUN chmod 0755 /usr/local/bin/code-server-entrypoint /usr/local/bin/launch-code-server
 
+# Small runner-only layer: AGY CLI, browser terminal, and local path router.
+# The heavy 15GB toolchain image is intentionally unchanged.
+ENV PATH="/opt/agy-cli/.local/bin:${PATH}"
+RUN apt-get update && apt-get install -y --no-install-recommends nginx ttyd tmux openssl \
+    && rm -rf /var/lib/apt/lists/*
+RUN set -eux; \
+    mkdir -p /opt/agy-cli; \
+    curl -fsSL --retry 5 --retry-delay 3 https://antigravity.google/cli/install.sh -o /tmp/agy-install.sh; \
+    HOME=/opt/agy-cli bash /tmp/agy-install.sh --skip-aliases --skip-path; \
+    test -x /opt/agy-cli/.local/bin/agy; \
+    /opt/agy-cli/.local/bin/agy --version; \
+    rm -f /tmp/agy-install.sh
+
+COPY scripts/agyshell /usr/local/bin/agyshell
+COPY config/nginx-agy.conf /etc/nginx/nginx-agy.conf
+COPY web/agy/index.html /usr/local/share/agy/index.html
+RUN chmod 0755 /usr/local/bin/agyshell
+
 # This is deliberately the FINAL filesystem layer. Upstream IDE updates cannot
 # invalidate the Debian + 15GB toolchain + shell layers underneath.
 RUN set -eux; \
