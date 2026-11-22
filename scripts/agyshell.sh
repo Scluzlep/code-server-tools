@@ -184,7 +184,9 @@ main() {
       ;;
     --version|--check)
       require_deps
-      echo "agy: $("$AGY_BIN" --version 2>&1 | head -n 1)"
+      local agy_ver=""
+      agy_ver="$("$AGY_BIN" --version 2>&1)"
+      echo "agy: ${agy_ver%%$'\n'*}"
       echo "tmux: $(tmux -V)"
       exit 0
       ;;

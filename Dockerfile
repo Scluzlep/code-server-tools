@@ -52,7 +52,7 @@ RUN set -eux; \
       'exec /opt/antigravity/agy "$@"' \
       > /usr/local/bin/agy; \
     chmod 0755 /usr/local/bin/agy; \
-    /usr/local/bin/agy --version
+    HOME=/tmp /usr/local/bin/agy --version
 
 COPY scripts/code-server-entrypoint.sh /usr/local/bin/code-server-entrypoint
 COPY scripts/launch-code-server.sh /usr/local/bin/launch-code-server
@@ -83,7 +83,7 @@ COPY scripts/patch-antigravity-proxy.cjs /usr/local/lib/patch-antigravity-proxy.
 COPY scripts/patch-agy-routes.cjs /usr/local/lib/patch-agy-routes.cjs
 RUN node /usr/local/lib/patch-antigravity-proxy.cjs && \
     node /usr/local/lib/patch-agy-routes.cjs && \
-    /usr/local/bin/agyshell --check
+    HOME=/tmp /usr/local/bin/agyshell --check
 
 EXPOSE 8443
 ENTRYPOINT ["/usr/local/bin/code-server-entrypoint"]
