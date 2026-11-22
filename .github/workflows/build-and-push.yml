@@ -243,7 +243,8 @@ jobs:
             http://127.0.0.1:18443/login >/dev/null
 
           # Verify /agy/ WebUI, assets, status API, and ttyd terminal under authenticated session.
-          curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/ | grep -q 'Antigravity 控制台'
+          agy_html="$(curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/)"
+          [[ "$agy_html" == *"Antigravity 控制台"* ]]
           curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/assets/app.js >/dev/null
           curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/terminal/ >/dev/null
 
@@ -263,7 +264,8 @@ jobs:
             exit 1
           fi
 
-          curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/hub/ | grep -q '__agyProxyBridgeInstalled'
+          hub_html="$(curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/hub/)"
+          [[ "$hub_html" == *"__agyProxyBridgeInstalled"* ]]
 
           # Cross-origin POST must be rejected with 403.
           code_csrf="$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/ci-cookies.txt \
@@ -315,13 +317,16 @@ jobs:
               text = out.decode("utf-8", "replace")
               if "not found" in text or (rc is not None and rc != 0):
                   sys.exit(f"PTY check failed for {args} (rc={rc}):\n{text}")
+              print(f"PTY_OK: {args}", flush=True)
 
           verify_pty(["--web", "ci-web"])
           verify_pty(["--web", "ci-web"])
           verify_pty(["-s", "ci-cli", "-c", "/config/workspace"])
           verify_pty(["-s", "ci-cli", "-c", "/config/workspace"])
           PY
-          docker exec -u abc agy-ci-verify /usr/local/bin/agyshell list | grep -q 'ci-web'
-          docker exec -u abc agy-ci-verify /usr/local/bin/agyshell list | grep -q 'ci-cli'
+          sessions_out="$(docker exec -u abc agy-ci-verify /usr/local/bin/agyshell list)"
+          echo "$sessions_out"
+          [[ "$sessions_out" == *"ci-web"* ]]
+          [[ "$sessions_out" == *"ci-cli"* ]]
           docker exec -u abc agy-ci-verify /usr/local/bin/agyshell kill ci-web >/dev/null
           docker exec -u abc agy-ci-verify /usr/local/bin/agyshell kill ci-cli >/dev/null
