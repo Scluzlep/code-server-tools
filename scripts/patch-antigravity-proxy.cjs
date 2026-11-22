@@ -266,16 +266,14 @@ function antigravityClientBridge(base) {
 // http-proxy emits proxyRes before copying headers and calling proxyRes.pipe(res).
 // Replace only the HTML stream for a recognized Hub port. Keep gzip/br encoding
 // when present, and remove stale length/validators after rewriting the bytes.
-function rewriteAntigravityHtml(proxyRes, req) {
-  const info = antigravityProxyInfo(req);
-  if (!info || !agyHubPorts.has(info.port)) return;
-  if (req.method === 'HEAD' || proxyRes.statusCode !== 200) return;
-  if (!/^text\/html(?:\s*;|$)/i.test(proxyRes.headers['content-type'] || '')) return;
+function rewriteAntigravityHtmlStream(proxyRes, prefix, method, bridgeFn) {
+  if (method === 'HEAD' || proxyRes.statusCode !== 200) return false;
+  if (!/^text\/html(?:\s*;|$)/i.test(proxyRes.headers['content-type'] || '')) return false;
   const encoding = (proxyRes.headers['content-encoding'] || 'identity').toLowerCase().trim();
-  if (encoding !== 'identity' && encoding !== 'gzip' && encoding !== 'br') return;
+  if (encoding !== 'identity' && encoding !== 'gzip' && encoding !== 'br') return false;
   const zlib = require('node:zlib');
   const { Transform } = require('node:stream');
-  const prefix = info.prefix;
+  const bridge = bridgeFn || antigravityClientBridge;
   delete proxyRes.headers['content-length'];
   delete proxyRes.headers.etag;
   delete proxyRes.headers['content-md5'];
@@ -297,7 +295,7 @@ function rewriteAntigravityHtml(proxyRes, req) {
             return attribute + '=' + quote + prefix + value + quote;
           });
           const bridgePayload = JSON.stringify(prefix).replace(/</g, '\\u003c');
-          const bridgeScript = '<script>(' + antigravityClientBridge.toString() + ')(' + bridgePayload + ');<' + '/script>';
+          const bridgeScript = '<script>(' + bridge.toString() + ')(' + bridgePayload + ');<' + '/script>';
           let withBridge;
           if (/<head(?:\s[^>]*)?>/i.test(updated)) {
             withBridge = updated.replace(/<head(?:\s[^>]*)?>/i, (head) => head + bridgeScript);
@@ -319,35 +317,56 @@ function rewriteAntigravityHtml(proxyRes, req) {
     pipe(rewrite);
     return rewrite.pipe(destination, options);
   };
+  return true;
 }
 
-const targetPath = resolveProxyPath();
-let source = fs.readFileSync(targetPath, 'utf8');
-const marker = '/* Antigravity loopback-only Hub Host/Origin compatibility */';
-if (source.includes(marker)) {
-  console.log(`Already patched ${targetPath}`);
-  process.exit(0);
+function rewriteAntigravityHtml(proxyRes, req) {
+  const info = antigravityProxyInfo(req);
+  if (!info || !agyHubPorts.has(info.port)) return;
+  rewriteAntigravityHtmlStream(proxyRes, info.prefix, req.method, antigravityClientBridge);
 }
 
-// Hook outbound HTTP and WebSocket proxy requests after code-server authentication.
-// Match upstream's actual compiled proxy code, and fail loudly on upstream changes.
-const hook = /((?:exports\.)?proxy)\.on\(\s*(['"])proxyReq\2\s*,\s*stripCookie\s*\)\s*;?/;
-const match = source.match(hook);
-if (!match) {
-  throw new Error(`Could not locate code-server proxyReq hook in ${targetPath}`);
+function patchProxyFile(targetPath) {
+  let source = fs.readFileSync(targetPath, 'utf8');
+  const marker = '/* Antigravity loopback-only Hub Host/Origin compatibility */';
+  if (source.includes(marker)) {
+    console.log(`Already patched ${targetPath}`);
+    return false;
+  }
+
+  // Hook outbound HTTP and WebSocket proxy requests after code-server authentication.
+  // Match upstream's actual compiled proxy code, and fail loudly on upstream changes.
+  const hook = /((?:exports\.)?proxy)\.on\(\s*(['"])proxyReq\2\s*,\s*stripCookie\s*\)\s*;?/;
+  const match = source.match(hook);
+  if (!match) {
+    throw new Error(`Could not locate code-server proxyReq hook in ${targetPath}`);
+  }
+  const instance = match[1];
+  const injected = [
+    marker,
+    'const agyHubPorts = new Set();',
+    'if (process.env.AGY_HUB_PORT && /^\\d+$/.test(process.env.AGY_HUB_PORT)) agyHubPorts.add(process.env.AGY_HUB_PORT);',
+    antigravityProxyInfo.toString(),
+    rewriteAntigravityLoopbackHost.toString(),
+    `${instance}.on("proxyReq", rewriteAntigravityLoopbackHost);`,
+    `${instance}.on("proxyReqWs", rewriteAntigravityLoopbackHost);`,
+    antigravityClientBridge.toString(),
+    rewriteAntigravityHtmlStream.toString(),
+    rewriteAntigravityHtml.toString(),
+    `${instance}.on("proxyRes", rewriteAntigravityHtml);`,
+  ].join('\n');
+  source = source.replace(hook, match[0] + '\n' + injected + '\n');
+  fs.writeFileSync(targetPath, source);
+  console.log(`Patched Antigravity loopback proxy in ${targetPath}`);
+  return true;
 }
-const instance = match[1];
-const injected = [
-  marker,
-  'const agyHubPorts = new Set();',
-  antigravityProxyInfo.toString(),
-  rewriteAntigravityLoopbackHost.toString(),
-  `${instance}.on("proxyReq", rewriteAntigravityLoopbackHost);`,
-  `${instance}.on("proxyReqWs", rewriteAntigravityLoopbackHost);`,
-  antigravityClientBridge.toString(),
-  rewriteAntigravityHtml.toString(),
-  `${instance}.on("proxyRes", rewriteAntigravityHtml);`,
-].join('\n');
-source = source.replace(hook, match[0] + '\n' + injected + '\n');
-fs.writeFileSync(targetPath, source);
-console.log(`Patched Antigravity loopback proxy in ${targetPath}`);
+
+if (require.main === module) {
+  patchProxyFile(resolveProxyPath());
+} else {
+  module.exports = {
+    antigravityClientBridge,
+    rewriteAntigravityHtmlStream,
+    patchProxyFile,
+  };
+}

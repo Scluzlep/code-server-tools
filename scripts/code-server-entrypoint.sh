@@ -14,14 +14,27 @@ if [ "$(id -u)" -eq 0 ]; then
   install -d -o abc -g abc -m 0755 /config
   for dir in /config/data /config/extensions /config/workspace \
              /config/.config /config/.local /config/.local/share \
-             /config/.local/share/keyrings /config/.local/state /config/go; do
+             /config/.local/share/keyrings /config/.local/state /config/go \
+             /config/.gemini /config/.gemini/bin /config/.gemini/antigravity \
+             /config/.gemini/antigravity-cli /config/.gemini/config; do
     install -d -o abc -g abc -m 0755 "$dir"
   done
+  if [ -x /opt/antigravity/agy ] && [ ! -e /config/.gemini/bin/agy ]; then
+    install -o abc -g abc -m 0755 /opt/antigravity/agy /config/.gemini/bin/agy
+  fi
   for file in .zshrc .p10k.zsh; do
     if [ ! -e "/config/$file" ]; then
       install -o abc -g abc -m 0644 "/etc/skel/$file" "/config/$file"
     fi
   done
   exec gosu abc dbus-run-session -- /usr/local/bin/launch-code-server "$@"
+fi
+for dir in /config/.gemini /config/.gemini/bin /config/.gemini/antigravity \
+           /config/.gemini/antigravity-cli /config/.gemini/config; do
+  mkdir -p "$dir"
+done
+if [ -x /opt/antigravity/agy ] && [ ! -e /config/.gemini/bin/agy ]; then
+  cp /opt/antigravity/agy /config/.gemini/bin/agy
+  chmod 0755 /config/.gemini/bin/agy
 fi
 exec dbus-run-session -- /usr/local/bin/launch-code-server "$@"

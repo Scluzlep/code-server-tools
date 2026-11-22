@@ -3,6 +3,8 @@ name: Build and Push Code-Server
 on:
   push:
     branches: [main]
+  pull_request:
+    branches: [main]
   workflow_dispatch:
     inputs:
       rebuild_toolchain:
@@ -42,6 +44,7 @@ jobs:
         id: upstream
         run: bash scripts/check-upstream.sh
       - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -65,7 +68,7 @@ jobs:
           if [ "$toolchain_exists" != true ] || [ "$REBUILD_TOOLCHAIN" = true ]; then
             build_toolchain=true
           fi
-          if [ "$EVENT" = push ] || [ "$EVENT" = workflow_dispatch ] ||
+          if [ "$EVENT" = push ] || [ "$EVENT" = pull_request ] || [ "$EVENT" = workflow_dispatch ] ||
              [ "$runner_exists" != true ] || [ "$build_toolchain" = true ] ||
              [ "$FORCE_RUNNER" = true ]; then
             build_runner=true
@@ -77,7 +80,7 @@ jobs:
 
   build-toolchain:
     needs: check-update
-    if: needs.check-update.outputs.should_build_toolchain == 'true'
+    if: needs.check-update.outputs.should_build_toolchain == 'true' && github.event_name != 'pull_request'
     runs-on: ubuntu-24.04-arm
     permissions:
       contents: write
@@ -149,11 +152,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - name: Load versions and repository owner
+        id: meta
+        env:
+          UPSTREAM_TAG: ${{ needs.check-update.outputs.upstream_tag }}
         run: |
           grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
-          echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+          owner="${GITHUB_REPOSITORY_OWNER,,}"
+          echo "REGISTRY_OWNER=$owner" >> "$GITHUB_ENV"
+          {
+            echo "tags<<EOF"
+            if [ "${{ github.event_name }}" = "pull_request" ]; then
+              echo "ghcr.io/${owner}/${RUNNER_IMAGE_NAME}:pr-${GITHUB_SHA}"
+            else
+              echo "ghcr.io/${owner}/${RUNNER_IMAGE_NAME}:${UPSTREAM_TAG}"
+              echo "ghcr.io/${owner}/${RUNNER_IMAGE_NAME}:latest"
+              echo "ghcr.io/${owner}/${RUNNER_IMAGE_NAME}:${GITHUB_SHA}"
+            fi
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
+        if: github.event_name != 'pull_request'
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -164,13 +183,97 @@ jobs:
           context: .
           file: Dockerfile
           platforms: linux/arm64
-          push: true
+          push: ${{ github.event_name != 'pull_request' }}
+          load: ${{ github.event_name == 'pull_request' }}
           build-args: |
             CODE_SERVER_VERSION=${{ needs.check-update.outputs.upstream_tag }}
             TOOLCHAIN_IMAGE=ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:${{ env.TOOLCHAIN_VERSION }}
-          tags: |
-            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:${{ needs.check-update.outputs.upstream_tag }}
-            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:latest
-            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:${{ github.sha }}
+          tags: ${{ steps.meta.outputs.tags }}
           cache-from: type=gha,scope=runner-arm64
           cache-to: type=gha,mode=max,scope=runner-arm64
+      - name: Verify ARM64 Runner Container
+        if: github.event_name == 'pull_request'
+        run: |
+          set -euo pipefail
+          IMG="ghcr.io/${REGISTRY_OWNER}/${RUNNER_IMAGE_NAME}:pr-${GITHUB_SHA}"
+          docker run --rm --entrypoint /usr/local/bin/agyshell "$IMG" --check
+          docker run --rm --entrypoint /usr/local/bin/ttyd "$IMG" --version
+          docker run --rm --entrypoint tmux "$IMG" -V
+
+          cleanup() {
+            docker rm -f agy-ci-verify >/dev/null 2>&1 || true
+            rm -f /tmp/ci-cookies.txt
+          }
+          trap cleanup EXIT
+
+          docker run -d --name agy-ci-verify \
+            -p 127.0.0.1:18443:8443 \
+            -e PASSWORD=ci-test-pass \
+            -e PUID=1000 \
+            -e PGID=1000 \
+            "$IMG"
+
+          for _ in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:18443/healthz >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+
+          if ! curl -fsS http://127.0.0.1:18443/healthz >/dev/null 2>&1; then
+            docker logs agy-ci-verify || true
+            exit 1
+          fi
+
+          # Unauthenticated requests must be redirected or rejected with 401.
+          code_root="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18443/agy/)"
+          code_api="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18443/agy/api/status)"
+          code_term="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18443/agy/terminal/)"
+          test "$code_root" = "302"
+          test "$code_api" = "401"
+          test "$code_term" = "302"
+
+          # Authenticate using code-server login endpoint.
+          curl -fsS -c /tmp/ci-cookies.txt -b /tmp/ci-cookies.txt \
+            -H 'Origin: http://127.0.0.1:18443' \
+            -d 'password=ci-test-pass' \
+            http://127.0.0.1:18443/login >/dev/null
+
+          # Verify /agy/ WebUI, assets, status API, and ttyd terminal under authenticated session.
+          curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/ | grep -q 'Antigravity 控制台'
+          curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/assets/app.js >/dev/null
+          curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/terminal/ >/dev/null
+
+          # Wait up to 15s for internal Hub & ttyd to report healthy in /agy/api/status.
+          status_ok=0
+          for _ in $(seq 1 15); do
+            status_json="$(curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/api/status)"
+            if printf '%s' "$status_json" | jq -e '.cli.available == true and .ttyd.healthy == true and .hub.healthy == true' >/dev/null 2>&1; then
+              status_ok=1
+              break
+            fi
+            sleep 1
+          done
+          if [ "$status_ok" -ne 1 ]; then
+            echo "Status check failed: $status_json"
+            docker logs agy-ci-verify || true
+            exit 1
+          fi
+
+          curl -fsS -b /tmp/ci-cookies.txt http://127.0.0.1:18443/agy/hub/ | grep -q '__agyProxyBridgeInstalled'
+
+          # Cross-origin POST must be rejected with 403.
+          code_csrf="$(curl -s -o /dev/null -w '%{http_code}' -b /tmp/ci-cookies.txt \
+            -X POST -H 'Origin: https://evil.example' -H 'Content-Type: application/json' \
+            -d '{}' http://127.0.0.1:18443/agy/api/sessions)"
+          test "$code_csrf" = "403"
+
+          # Authenticated POST + kill session smoke test.
+          create_json="$(curl -fsS -b /tmp/ci-cookies.txt \
+            -X POST -H 'Origin: http://127.0.0.1:18443' -H 'Content-Type: application/json' \
+            -d '{"name":"ci-smoke","cwd":"/config/workspace"}' \
+            http://127.0.0.1:18443/agy/api/sessions)"
+          printf '%s' "$create_json" | jq -e '.ok == true and .sessionName == "ci-smoke"' >/dev/null
+          curl -fsS -b /tmp/ci-cookies.txt \
+            -X POST -H 'Origin: http://127.0.0.1:18443' \
+            http://127.0.0.1:18443/agy/api/sessions/ci-smoke/kill | jq -e '.ok == true' >/dev/null
