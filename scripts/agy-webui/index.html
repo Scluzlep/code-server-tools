@@ -1,0 +1,184 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Antigravity 控制台 · /agy/</title>
+  <link rel="stylesheet" href="./assets/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header id="topbar" class="topbar">
+      <div class="topbar-left">
+        <div class="brand">
+          <span class="brand-dot" id="ws-dot" title="实时状态连接"></span>
+          <span class="brand-title">Antigravity</span>
+          <span class="brand-sub">/agy/</span>
+        </div>
+        <div class="status-pills">
+          <span class="pill" id="pill-cli">CLI: 检测中...</span>
+          <span class="pill" id="pill-hub">Hub: 启动中...</span>
+          <span class="pill" id="pill-auth">账号: 检测中...</span>
+        </div>
+      </div>
+
+      <nav class="tabs" role="tablist" aria-label="控制台视图">
+        <button type="button" class="tab active" data-tab="workbench" role="tab" aria-selected="true">
+          图形工作台
+        </button>
+        <button type="button" class="tab" data-tab="sessions" role="tab" aria-selected="false">
+          任务与会话 <span class="tab-badge" id="badge-sessions">0</span>
+        </button>
+        <button type="button" class="tab" data-tab="terminal" role="tab" aria-selected="false">
+          Web 终端
+        </button>
+      </nav>
+
+      <div class="topbar-actions">
+        <button type="button" class="btn btn-ghost" id="btn-collapse-bar" title="收起顶栏以便专注查看">收起顶栏</button>
+        <a class="btn btn-secondary" href="../" id="link-ide">返回 IDE</a>
+      </div>
+    </header>
+
+    <button type="button" id="btn-expand-bar" class="expand-fab hidden" title="展开顶栏">展开控制栏</button>
+
+    <div id="auth-banner" class="banner banner-warn hidden">
+      <div class="banner-text">
+        <strong>检测到待完成的 Google 授权登录：</strong>
+        <span id="auth-banner-hint">请在新标签页打开下方链接完成登录（或将授权码贴回对应界面）。</span>
+      </div>
+      <div class="banner-actions">
+        <a id="auth-banner-link" class="btn btn-primary btn-sm" href="#" target="_blank" rel="noopener noreferrer">打开登录链接</a>
+        <button type="button" class="btn btn-secondary btn-sm" id="btn-copy-auth-url">复制链接</button>
+      </div>
+    </div>
+
+    <main class="workspace">
+      <section id="panel-workbench" class="panel panel-active" role="tabpanel">
+        <div id="swarm-tip" class="tip-strip">
+          <span>
+            <strong>Swarm 提示：</strong>在下方输入 <code>/swarm &lt;任务&gt;</code> 启动多 Agent 协作，随后在右上角 <strong>Overview → Plugins → Swarm</strong> 查看官方原生 <strong>Board / Members / Graph</strong> 面板；与 IDE 侧栏共享同一套会话。
+          </span>
+          <div class="tip-actions">
+            <button type="button" class="btn btn-ghost btn-xs" id="btn-reload-hub">刷新工作台</button>
+            <button type="button" class="btn btn-ghost btn-xs" id="btn-dismiss-tip">知道了</button>
+          </div>
+        </div>
+        <div class="frame-wrap">
+          <div id="hub-offline-mask" class="offline-mask hidden">
+            <div class="offline-card">
+              <h2 id="hub-mask-title">Antigravity Hub 正在启动...</h2>
+              <p id="hub-mask-desc">正在等待后台 <code>agy --hub</code> 通过健康检查，就绪后会自动加载图形工作台。</p>
+              <div class="offline-actions">
+                <button type="button" class="btn btn-primary" id="btn-retry-hub-frame">立即重试</button>
+                <button type="button" class="btn btn-secondary" id="btn-goto-terminal">改用 Web 终端</button>
+              </div>
+            </div>
+          </div>
+          <iframe id="hub-frame" title="Antigravity 图形工作台" src="./hub/"></iframe>
+        </div>
+      </section>
+
+      <section id="panel-sessions" class="panel panel-scroll hidden" role="tabpanel">
+        <div class="grid-container">
+          <div class="card card-wide">
+            <div class="card-header">
+              <h2>发起 Agent / Swarm 任务</h2>
+              <span class="muted">真实创建后台 <code>agyshell</code> tmux 会话，或直接在图形工作台发起</span>
+            </div>
+            <form id="launch-form" class="launch-form">
+              <label class="field">
+                <span>任务描述</span>
+                <textarea id="task-prompt" rows="3" placeholder="例如：为 src/ 目录补全单元测试并运行测试验证；勾选下方 Swarm 开关将自动作为 /swarm 任务发起"></textarea>
+              </label>
+              <div class="form-row">
+                <label class="field">
+                  <span>工作目录（容器内路径）</span>
+                  <input id="task-cwd" type="text" value="/config/workspace" />
+                </label>
+                <label class="field">
+                  <span>会话名称（可选）</span>
+                  <input id="task-name" type="text" placeholder="留空自动生成，仅限字母/数字/._-" />
+                </label>
+              </div>
+              <div class="form-footer">
+                <label class="checkbox-label">
+                  <input id="task-swarm" type="checkbox" checked />
+                  <span>以 <code>/swarm</code> 多 Agent 协作模式运行</span>
+                </label>
+                <div class="form-buttons">
+                  <button type="submit" class="btn btn-primary" id="btn-launch-session">启动后台 agyshell 任务</button>
+                  <button type="button" class="btn btn-secondary" id="btn-open-workbench">前往图形工作台</button>
+                </div>
+              </div>
+              <div id="launch-feedback" class="feedback hidden"></div>
+            </form>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>Hub 对话与 Swarm 协调器</h2>
+              <span class="badge-subtle" id="hub-conv-source">真实 RPC 数据</span>
+            </div>
+            <div id="hub-conversations-list" class="list-stack">
+              <div class="empty-state">正在读取 Hub 会话列表...</div>
+            </div>
+          </div>
+
+          <div class="card">
+            <div class="card-header">
+              <h2>后台 agyshell 会话 (tmux)</h2>
+              <button type="button" class="btn btn-secondary btn-xs" id="btn-new-empty-shell">+ 新建空白终端</button>
+            </div>
+            <div id="tmux-sessions-list" class="list-stack">
+              <div class="empty-state">正在读取 tmux 会话...</div>
+            </div>
+          </div>
+
+          <div class="card card-wide">
+            <div class="card-header">
+              <h2>服务状态、能力边界与 Hub 实时日志</h2>
+              <button type="button" class="btn btn-secondary btn-xs" id="btn-restart-hub">重启 Hub 进程</button>
+            </div>
+            <div id="capabilities-grid" class="cap-grid"></div>
+            <details class="log-details" open>
+              <summary>Hub 进程最近输出（敏感 Token 已自动脱敏）</summary>
+              <pre id="hub-logs" class="log-box">等待日志...</pre>
+            </details>
+          </div>
+        </div>
+      </section>
+
+      <section id="panel-terminal" class="panel hidden" role="tabpanel">
+        <div class="term-toolbar">
+          <div class="term-controls">
+            <label for="term-session-select">当前会话：</label>
+            <select id="term-session-select">
+              <option value="workspace">workspace（默认工作区）</option>
+            </select>
+            <button type="button" class="btn btn-secondary btn-xs" id="btn-term-connect">连接 / 刷新</button>
+            <button type="button" class="btn btn-secondary btn-xs" id="btn-term-new">+ 新建会话</button>
+          </div>
+          <div class="term-hints">
+            <span><code>/swarm</code> 启动协作</span>
+            <span><code>Alt+S</code> / <code>/swarm board</code> 看板</span>
+            <span><code>/agents</code> 子代理审批</span>
+            <span><code>Ctrl+B d</code> 后台分离</span>
+          </div>
+        </div>
+        <div class="frame-wrap">
+          <div id="term-offline-mask" class="offline-mask hidden">
+            <div class="offline-card">
+              <h2>Web 终端正在准备...</h2>
+              <p id="term-mask-desc">正在等待内部 <code>ttyd</code> 服务就绪。</p>
+              <button type="button" class="btn btn-primary" id="btn-retry-term-frame">重新连接终端</button>
+            </div>
+          </div>
+          <iframe id="term-frame" title="AGYShell Web 终端"></iframe>
+        </div>
+      </section>
+    </main>
+  </div>
+  <script src="./assets/app.js"></script>
+</body>
+</html>

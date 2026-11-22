@@ -5,6 +5,12 @@ export XDG_CONFIG_HOME=/config/.config
 export XDG_DATA_HOME=/config/.local/share
 export XDG_STATE_HOME=/config/.local/state
 export SHELL=/usr/bin/zsh
+export PATH="/config/.gemini/bin:${PATH}"
+export AGY_HUB_PORT="${AGY_HUB_PORT:-34500}"
+export AGY_TTYD_PORT="${AGY_TTYD_PORT:-7681}"
+if [ "${AGY_SHARED_HUB:-1}" = "1" ] && [ -z "${ANTIGRAVITY_SERVER_URL:-}" ]; then
+  export ANTIGRAVITY_SERVER_URL="http://127.0.0.1:${AGY_HUB_PORT}"
+fi
 
 # Persistent Secret Service backing store: /config/.local/share/keyrings.
 # Reuse KEYRING_PASSWORD (or the 1Panel SUDO_PASSWORD) to unlock at restart.
