@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-SELF="${AGYSHELL_SELF:-$0}"
+SELF="${AGYSHELL_SELF:-$(command -v "$0" 2>/dev/null || printf '%s' "$0")}"
 TMUX_CONF="${AGYSHELL_TMUX_CONF:-/etc/agyshell.tmux.conf}"
 TMUX_SOCK="${AGYSHELL_TMUX_SOCKET:-agy}"
 AGY_BIN="${AGY_BIN:-agy}"
@@ -44,6 +44,14 @@ tmux_cmd() {
     tmux -L "$TMUX_SOCK" -f "$TMUX_CONF" "$@"
   else
     tmux -L "$TMUX_SOCK" "$@"
+  fi
+}
+
+exec_tmux_cmd() {
+  if [ -r "$TMUX_CONF" ]; then
+    exec tmux -L "$TMUX_SOCK" -f "$TMUX_CONF" "$@"
+  else
+    exec tmux -L "$TMUX_SOCK" "$@"
   fi
 }
 
@@ -138,14 +146,14 @@ run_web() {
   validate_session_name "$name"
   require_deps
   if tmux_cmd has-session -t "=$name" 2>/dev/null; then
-    exec tmux_cmd attach-session -t "=$name"
+    exec_tmux_cmd attach-session -t "=$name"
   fi
   local default_cwd="${DEFAULT_WORKSPACE:-/config/workspace}"
   if [ ! -d "$default_cwd" ]; then
     default_cwd="${HOME:-/config}"
   fi
   default_cwd="$(resolve_dir "$default_cwd")"
-  exec tmux_cmd new-session -s "$name" -c "$default_cwd" "$SELF" --runner "$default_cwd"
+  exec_tmux_cmd new-session -s "$name" -c "$default_cwd" "$SELF" --runner "$default_cwd"
 }
 
 cmd_list() {
@@ -274,7 +282,7 @@ main() {
       echo "$session_name"
       exit 0
     fi
-    exec tmux_cmd attach-session -t "=$session_name"
+    exec_tmux_cmd attach-session -t "=$session_name"
   fi
 
   if [ "${#agy_args[@]}" -gt 0 ]; then
@@ -287,7 +295,7 @@ main() {
     echo "$session_name"
     exit 0
   fi
-  exec tmux_cmd attach-session -t "=$session_name"
+  exec_tmux_cmd attach-session -t "=$session_name"
 }
 
 main "$@"
