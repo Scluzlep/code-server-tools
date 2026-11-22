@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Share one long-lived session between the code-server terminal and /agy/.
+export HOME=/config
+export PATH="/opt/agy-cli/.local/bin:$PATH"
+
+if ! command -v agy >/dev/null 2>&1; then
+  echo 'AGY CLI is unavailable; rebuild the runner image.' >&2
+  exit 127
+fi
+
+session="${AGY_SESSION:-agy}"
+if [[ ! "$session" =~ ^[a-zA-Z0-9_.-]+$ ]]; then
+  echo 'AGY_SESSION must contain only letters, numbers, dot, dash or underscore.' >&2
+  exit 2
+fi
+
+if [ -n "${TMUX:-}" ]; then
+  exec agy "$@"
+fi
+exec tmux new-session -A -s "$session" -c "$PWD" agy "$@"
