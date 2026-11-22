@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="color-scheme" content="dark">
+<title>Antigravity Shell · code-server</title>
+<style>
+  :root{font-family:system-ui,-apple-system,"Segoe UI",sans-serif;color:#e6e9f3;background:#0d1018}
+  *{box-sizing:border-box}body{margin:0;display:flex;flex-direction:column;height:100dvh;min-height:400px}
+  header{padding:12px 18px;border-bottom:1px solid #303745;display:flex;align-items:center;gap:14px;flex-wrap:wrap;background:#141a25}
+  strong{font-size:15px;letter-spacing:.01em}p{margin:0;color:#a9b2c5;font-size:12px}
+  nav{display:flex;gap:8px;margin-left:auto;align-items:center}
+  a{padding:7px 11px;border:1px solid #3a455c;color:#dce5ff;border-radius:8px;text-decoration:none;font-size:12px;white-space:nowrap}
+  a:hover{background:#242d43}
+  main{flex:1;min-height:0;padding:10px}
+  iframe{height:100%;width:100%;border:1px solid #283248;border-radius:9px;background:#111722}
+  footer{padding:6px 16px 10px;color:#96a1b5;font-size:12px}
+  code{color:#d5c3ff}
+  @media(max-width:560px){header{gap:8px;padding:10px}nav{margin-left:0}main{padding:4px}footer{font-size:11px}}
+</style>
+</head>
+<body>
+<header>
+  <div><strong>Antigravity Shell</strong><p>共用 code-server 工作区与持久化 AGY 会话</p></div>
+  <nav>
+    <a href="/" target="_blank" rel="noopener">code-server</a>
+    <a href="/agy/terminal/" target="_blank" rel="noopener">独立终端</a>
+    <a href="https://antigravity.google.com/" target="_blank" rel="noopener noreferrer">官方图形控制台</a>
+  </nav>
+</header>
+<main><iframe src="/agy/terminal/" title="AGY interactive terminal" allow="clipboard-read; clipboard-write"></iframe></main>
+<footer>首次使用在终端登录 Google 账号。输入 <code>/swarm &lt;任务&gt;</code> 启动；输入 <code>/swarm board</code> 或按 <code>Alt+S</code> 查看实时面板。</footer>
+</body>
+</html>
