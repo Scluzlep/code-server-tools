@@ -4,6 +4,31 @@
 
 ---
 
+## Antigravity CLI / Swarm 网页入口
+
+Runner 镜像内置官方 `agy` CLI、`tmux`、`ttyd` 和轻量 nginx 反代，不改重型 Toolchain、Docker Compose 的对外端口或现有 code-server 认证。
+
+| 入口 | 功能 |
+| --- | --- |
+| `https://<你的 code-server 域名>/` | 原 code-server IDE |
+| `https://<你的 code-server 域名>/agy/` | AGY 网页控制台（有顶栏的交互终端） |
+| `https://<你的 code-server 域名>/agy/terminal/` | 全屏 AGY TUI，包含 `/swarm board` |
+| IDE 终端 `agyshell` | 进入同一 `tmux` 会话；刷新网页后任务不中断 |
+| IDE 终端 `agy` | 直接运行 CLI，不使用共享会话 |
+
+**部署：** 合并本次改动，等待 Runner 的 GitHub Actions 构建成功，再在 1Panel 使用原 Compose 拉取新 Runner 镜像并重建容器。原 `/config` 挂载、Cookie/keyring entrypoint、Antigravity VSIX 及 `/proxy/<port>/` 补丁保持不变。原公网入口仍是 8443；nginx 在容器内监听 8443，code-server 移到容器内 `127.0.0.1:8444`，ttyd 仅监听容器内 `127.0.0.1:7681`。
+
+**首次登录：** 用 `/agy/` 打开终端，按 AGY 提示完成 Google 登录；若无浏览器回调，则先在 code-server 终端运行 `agy acp --login` 完成远程登录，再运行 `agyshell`。AGY 用户数据和密钥写入已有的 `/config/.gemini` 和 `/config/.local/share/keyrings`；后续更新镜像不丢失。
+
+**使用 Swarm：** 输入 `/swarm <任务说明>`，运行期间输入 `/swarm board`（或按 `Alt+S`）进入实时成员/消息看板。网页中的看板是 **官方 CLI 的 TUI**，不是 Antigravity App 的原生图形看板；官方 GUI Remote Control 仍在 [antigravity.google.com](https://antigravity.google.com/)。
+
+**安全：** `/agy/` 使用独立 HTTP Basic 验证，默认与 code-server 的 `PASSWORD` 共用密码，用户名固定为 `agy`。可额外设置环境变量 `AGY_WEB_PASSWORD` 指定不同密码；必须设置二者之一，否则容器拒绝启动。不要给 ttyd 或内部 code-server 8444 单独映射公网端口。WebSocket 经由同一 8443 入口转发，外层 1Panel HTTPS 反代应允许 WebSocket Upgrade。
+
+**会话：** `agyshell` 使用 `tmux` 的 `agy` 会话，网页断开后 CLI 继续运行；容器重建会结束进程，但 `/config` 下的登录信息和 AGY 对话仍保留。运行 `AGY_SESSION=project2 agyshell` 可以创建另一个独立会话。 `agyshell` 总是在第一次创建会话时采用当前目录，此后重新连接的是已有目录。
+
+
+---
+
 ## 🌟 核心特性与架构设计
 
 ### 1. 颠倒层级架构（Toolchain Base 模式）
