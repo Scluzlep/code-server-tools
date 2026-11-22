@@ -280,3 +280,48 @@ jobs:
           curl -fsS -b /tmp/ci-cookies.txt \
             -X POST -H 'Origin: http://127.0.0.1:18443' \
             http://127.0.0.1:18443/agy/api/sessions/ci-smoke/kill | jq -e '.ok == true' >/dev/null
+
+          # Verify real PTY execution of agyshell --web and interactive CLI attach/create (all 4 exec_tmux_cmd paths).
+          python3 - <<'PY'
+          import os, pty, select, subprocess, sys, time
+
+          def verify_pty(args):
+              cmd = ["docker", "exec", "-it", "-u", "abc", "agy-ci-verify", "/usr/local/bin/agyshell", *args]
+              master, slave = pty.openpty()
+              proc = subprocess.Popen(cmd, stdin=slave, stdout=slave, stderr=slave, close_fds=True)
+              os.close(slave)
+              out = bytearray()
+              deadline = time.time() + 2.5
+              while time.time() < deadline:
+                  r, _, _ = select.select([master], [], [], 0.2)
+                  if r:
+                      try:
+                          chunk = os.read(master, 4096)
+                          if not chunk:
+                              break
+                          out.extend(chunk)
+                      except OSError:
+                          break
+                  if proc.poll() is not None:
+                      break
+              rc = proc.poll()
+              os.close(master)
+              if proc.poll() is None:
+                  proc.terminate()
+                  try:
+                      proc.wait(timeout=3)
+                  except subprocess.TimeoutExpired:
+                      proc.kill()
+              text = out.decode("utf-8", "replace")
+              if "not found" in text or (rc is not None and rc != 0):
+                  sys.exit(f"PTY check failed for {args} (rc={rc}):\n{text}")
+
+          verify_pty(["--web", "ci-web"])
+          verify_pty(["--web", "ci-web"])
+          verify_pty(["-s", "ci-cli", "-c", "/config/workspace"])
+          verify_pty(["-s", "ci-cli", "-c", "/config/workspace"])
+          PY
+          docker exec -u abc agy-ci-verify /usr/local/bin/agyshell list | grep -q 'ci-web'
+          docker exec -u abc agy-ci-verify /usr/local/bin/agyshell list | grep -q 'ci-cli'
+          docker exec -u abc agy-ci-verify /usr/local/bin/agyshell kill ci-web >/dev/null
+          docker exec -u abc agy-ci-verify /usr/local/bin/agyshell kill ci-cli >/dev/null

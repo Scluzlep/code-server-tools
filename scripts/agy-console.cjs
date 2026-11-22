@@ -549,6 +549,191 @@ class ManagedProcess extends EventEmitter {
   }
 }
 
+function readJsoncObject(filePath) {
+  if (!filePath || !fs.existsSync(filePath)) return {};
+  try {
+    const raw = fs.readFileSync(filePath, 'utf8');
+    let stripped = '';
+    let inString = false;
+    let inLineComment = false;
+    let inBlockComment = false;
+    let escaped = false;
+    for (let i = 0; i < raw.length; i++) {
+      const ch = raw[i];
+      const next = raw[i + 1];
+      if (inLineComment) {
+        if (ch === '\n' || ch === '\r') {
+          inLineComment = false;
+          stripped += ch;
+        }
+        continue;
+      }
+      if (inBlockComment) {
+        if (ch === '*' && next === '/') {
+          inBlockComment = false;
+          i++;
+        }
+        continue;
+      }
+      if (inString) {
+        stripped += ch;
+        if (escaped) {
+          escaped = false;
+        } else if (ch === '\\') {
+          escaped = true;
+        } else if (ch === '"') {
+          inString = false;
+        }
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        stripped += ch;
+      } else if (ch === '/' && next === '/') {
+        inLineComment = true;
+        i++;
+      } else if (ch === '/' && next === '*') {
+        inBlockComment = true;
+        i++;
+      } else {
+        stripped += ch;
+      }
+    }
+    let clean = '';
+    inString = false;
+    escaped = false;
+    for (let i = 0; i < stripped.length; i++) {
+      const ch = stripped[i];
+      if (inString) {
+        clean += ch;
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        clean += ch;
+        continue;
+      }
+      if (ch === ',') {
+        let j = i + 1;
+        while (j < stripped.length && /\s/.test(stripped[j])) j++;
+        if (stripped[j] === '}' || stripped[j] === ']') continue;
+      }
+      clean += ch;
+    }
+    const parsed = JSON.parse(clean);
+    return (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) ? parsed : {};
+  } catch (_err) {
+    return {};
+  }
+}
+
+function redactProxyUrl(rawUrl) {
+  if (!rawUrl) return '';
+  try {
+    const u = new URL(rawUrl);
+    if (u.username || u.password) {
+      return `${u.protocol}//[REDACTED]@${u.host}${u.pathname === '/' ? '' : u.pathname}${u.search}`;
+    }
+    return u.toString();
+  } catch (_err) {
+    return String(rawUrl).replace(/:\/\/([^/@:]+(?::[^/@]*)?)@/g, '://[REDACTED]@');
+  }
+}
+
+function buildRuntimeProxyEnv(baseEnv, settingsPath) {
+  const env = { ...(baseEnv || process.env) };
+  const settings = readJsoncObject(settingsPath);
+  const proxySupport = String(settings['http.proxySupport'] || '').trim().toLowerCase();
+  if (proxySupport === 'off') {
+    for (const k of [
+      'HTTP_PROXY', 'http_proxy', 'HTTPS_PROXY', 'https_proxy',
+      'ALL_PROXY', 'all_proxy', 'AGY_LLM_GATEWAY_PROXY_URL', 'AGY_PROXY_STRICT_SSL',
+    ]) {
+      delete env[k];
+    }
+    env.NO_PROXY = '*';
+    env.no_proxy = '*';
+    return { env, summary: { enabled: false, mode: 'off', source: 'vscode-settings', proxyUrl: '', noProxy: '*' } };
+  }
+
+  const cfgProxy = typeof settings['http.proxy'] === 'string' ? settings['http.proxy'].trim() : '';
+  const envProxy = String(
+    env.HTTPS_PROXY || env.https_proxy || env.HTTP_PROXY || env.http_proxy || env.ALL_PROXY || env.all_proxy || ''
+  ).trim();
+  const effectiveProxy = cfgProxy || envProxy;
+  const source = cfgProxy ? 'vscode-settings' : (envProxy ? 'env' : 'none');
+
+  if (cfgProxy) {
+    env.HTTP_PROXY = cfgProxy;
+    env.http_proxy = cfgProxy;
+    env.HTTPS_PROXY = cfgProxy;
+    env.https_proxy = cfgProxy;
+  } else if (envProxy) {
+    if (!env.HTTP_PROXY) env.HTTP_PROXY = envProxy;
+    if (!env.http_proxy) env.http_proxy = env.HTTP_PROXY;
+    if (!env.HTTPS_PROXY) env.HTTPS_PROXY = envProxy;
+    if (!env.https_proxy) env.https_proxy = env.HTTPS_PROXY;
+  }
+
+  const rawCfgNoProxy = settings['http.noProxy'];
+  const cfgNoProxy = Array.isArray(rawCfgNoProxy)
+    ? rawCfgNoProxy.filter((v) => typeof v === 'string').map((v) => v.trim()).filter(Boolean).join(',')
+    : (typeof rawCfgNoProxy === 'string' ? rawCfgNoProxy.trim() : '');
+  const existingNoProxy = String(env.NO_PROXY || env.no_proxy || '').trim();
+
+  if (effectiveProxy || cfgNoProxy || existingNoProxy) {
+    const parts = [];
+    const seen = new Set();
+    let hasStar = false;
+    for (const piece of [existingNoProxy, cfgNoProxy].filter(Boolean).join(',').split(',')) {
+      const trimmed = piece.trim();
+      if (!trimmed) continue;
+      const lower = trimmed.toLowerCase();
+      if (lower === '*') hasStar = true;
+      if (!seen.has(lower)) {
+        seen.add(lower);
+        parts.push(trimmed);
+      }
+    }
+    if (!hasStar) {
+      for (const localHost of ['localhost', '127.0.0.1', '::1']) {
+        if (!seen.has(localHost)) {
+          seen.add(localHost);
+          parts.push(localHost);
+        }
+      }
+    }
+    const mergedNoProxy = parts.join(',');
+    env.NO_PROXY = mergedNoProxy;
+    env.no_proxy = mergedNoProxy;
+  }
+
+  if (effectiveProxy && settings['http.proxyStrictSSL'] === false) {
+    env.AGY_PROXY_STRICT_SSL = 'false';
+  }
+
+  const caCert = typeof settings['antigravity.caCertificates'] === 'string' ? settings['antigravity.caCertificates'].trim() : '';
+  if (caCert && fs.existsSync(caCert)) {
+    env.AGY_CA_CERT = caCert;
+    env.AGY_LLM_GATEWAY_CA_CERT = caCert;
+    env.NODE_EXTRA_CA_CERTS = caCert;
+  }
+
+  return {
+    env,
+    summary: {
+      enabled: Boolean(effectiveProxy),
+      mode: effectiveProxy ? 'proxy' : 'direct',
+      source,
+      proxyUrl: redactProxyUrl(effectiveProxy),
+      noProxy: env.NO_PROXY || '',
+    },
+  };
+}
+
 function createAgyConsole(opts = {}) {
   const hubPort = Number(opts.hubPort || process.env.AGY_HUB_PORT || 34500);
   const ttydPort = Number(opts.ttydPort || process.env.AGY_TTYD_PORT || 7681);
@@ -559,6 +744,7 @@ function createAgyConsole(opts = {}) {
   const tmuxSocket = opts.tmuxSocket || process.env.AGYSHELL_TMUX_SOCKET || 'agy';
   const defaultWorkspace = opts.defaultWorkspace || process.env.DEFAULT_WORKSPACE || '/config/workspace';
   const allowedRoot = opts.allowedRoot || process.env.AGY_ALLOWED_WORKSPACE_ROOT || '/config';
+  const vscodeSettingsPath = opts.vscodeSettingsPath || process.env.VSCODE_SETTINGS_PATH || '/config/data/User/settings.json';
   const sharedIdeHub = (opts.sharedIdeHub !== undefined)
     ? Boolean(opts.sharedIdeHub)
     : (process.env.AGY_SHARED_HUB || '1') !== '0';
@@ -574,9 +760,10 @@ function createAgyConsole(opts = {}) {
 
   const hubProc = new ManagedProcess('agy-hub', () => {
     const cwd = fs.existsSync(defaultWorkspace) ? defaultWorkspace : os.homedir();
+    const { env: baseProxyEnv } = buildRuntimeProxyEnv(process.env, vscodeSettingsPath);
     const env = {
-      ...process.env,
-      HOME: process.env.HOME || os.homedir(),
+      ...baseProxyEnv,
+      HOME: baseProxyEnv.HOME || os.homedir(),
       AGY_ENABLE_HUB: '1',
       ANTIGRAVITY_VSCODE_HOST: '1',
       ANTIGRAVITY_REMOTE_OOB_AUTH: '1',
@@ -593,6 +780,7 @@ function createAgyConsole(opts = {}) {
 
   const ttydProc = new ManagedProcess('ttyd', () => {
     const cwd = fs.existsSync(defaultWorkspace) ? defaultWorkspace : os.homedir();
+    const { env: baseProxyEnv } = buildRuntimeProxyEnv(process.env, vscodeSettingsPath);
     return {
       bin: ttydBin,
       args: [
@@ -607,7 +795,7 @@ function createAgyConsole(opts = {}) {
         '--web',
       ],
       cwd,
-      env: { ...process.env },
+      env: baseProxyEnv,
     };
   });
 
@@ -746,6 +934,7 @@ function createAgyConsole(opts = {}) {
     }
 
     const tmux = await tmuxPromise;
+    const { summary: proxy } = buildRuntimeProxyEnv(process.env, vscodeSettingsPath);
     return {
       timestamp: new Date().toISOString(),
       cli,
@@ -767,6 +956,7 @@ function createAgyConsole(opts = {}) {
       user,
       conversations,
       tmux,
+      proxy,
       capabilities: {
         nativeSwarmWebUi: true,
         sharedIdeHub,
@@ -904,7 +1094,8 @@ function createAgyConsole(opts = {}) {
           }
 
           try {
-            const { stdout } = await execFileAsync(agyshellBin, cliArgs, { timeout: 10000 });
+            const { env: sessionEnv } = buildRuntimeProxyEnv(process.env, vscodeSettingsPath);
+            const { stdout } = await execFileAsync(agyshellBin, cliArgs, { timeout: 10000, env: sessionEnv });
             const sessionName = stdout.trim().split(/\r?\n/).pop() || name || 'workspace';
             scheduleBroadcast();
             sendJson(res, 201, { ok: true, sessionName, cwd });
@@ -1083,6 +1274,9 @@ function createAgyConsole(opts = {}) {
     ttydProc,
     _internals: {
       redactSecrets,
+      redactProxyUrl,
+      readJsoncObject,
+      buildRuntimeProxyEnv,
       stripCookieHeader,
       parseSubProxyPath,
       resolveWorkspaceDir,

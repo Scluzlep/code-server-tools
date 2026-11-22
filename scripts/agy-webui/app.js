@@ -350,6 +350,12 @@
           ? '完整 Swarm 实时面板（Board / Members / Graph）由官方 Hub 工作台直接提供；任务中心额外读取真实对话列表与 tmux 会话。'
           : '仅支持基础状态查看。',
       },
+      {
+        name: '出站网络代理',
+        detail: data.proxy && data.proxy.enabled
+          ? ('已启用 (' + data.proxy.proxyUrl + ' · 来源: ' + (data.proxy.source === 'vscode-settings' ? 'VS Code http.proxy' : '容器环境变量') + ' · NO_PROXY 已含环回)')
+          : '直连模式（如需走代理，可在 Docker 环境变量设置 HTTP_PROXY/HTTPS_PROXY 或在 VS Code 设置 http.proxy 后重启 Hub）',
+      },
     ];
     for (const item of items) {
       const box = document.createElement('div');
