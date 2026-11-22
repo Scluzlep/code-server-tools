@@ -3,18 +3,30 @@
 const fs = require('node:fs');
 const { execFileSync } = require('node:child_process');
 
-function resolveProxyPath() {
-  if (process.argv[2]) {
-    return process.argv[2];
+function resolveCodeServerFile(argIndex, pathPattern, label) {
+  if (process.argv[argIndex]) {
+    return process.argv[argIndex];
   }
   // The standalone code-server tarball can use a nested node_modules layout.
   const paths = execFileSync('find', [
-    '/opt/code-server', '-type', 'f', '-path', '*/out/node/proxy.js',
+    '/opt/code-server', '-type', 'f', '-path', pathPattern,
   ], { encoding: 'utf8' }).trim().split('\n').filter(Boolean);
   if (paths.length !== 1) {
-    throw new Error(`Expected one code-server proxy.js, found ${paths.length}: ${paths.join(', ')}`);
+    throw new Error(`Expected one code-server ${label}, found ${paths.length}: ${paths.join(', ')}`);
   }
   return paths[0];
+}
+
+function resolveProxyPath() {
+  return resolveCodeServerFile(2, '*/out/node/proxy.js', 'proxy.js');
+}
+
+function resolveServiceWorkerPath() {
+  return resolveCodeServerFile(
+    3,
+    '*/vs/workbench/contrib/webview/browser/pre/service-worker.js',
+    'webview service-worker.js'
+  );
 }
 
 // Serialized into code-server's proxy.js and injected into proxied Hub HTML.
@@ -261,6 +273,91 @@ function antigravityClientBridge(base) {
       return origSetAttribute.call(this, name, value);
     };
   }
+
+  // Relay and replay initial postmessage-rpc requests when jetski-frame boots before bridge.js finishes loading.
+  try {
+    var search = window.location && window.location.search ? String(window.location.search) : '';
+    var parentWin = window.parent;
+    if (parentWin && parentWin !== window &&
+        /[?&]extensionView=true(?:&|#|$)/.test(search) &&
+        typeof parentWin.postMessage === 'function') {
+      if (!parentWin.__agyOrigPostMessage) {
+        parentWin.__agyOrigPostMessage = parentWin.postMessage;
+      }
+      var origParentPost = parentWin.__agyOrigPostMessage;
+      var bridgeReady = false;
+      var pendingRpc = new Map();
+      var retryTimer = null;
+      var startedAt = Date.now();
+      var maxRetryMs = 300000;
+
+      var stopRetryTimer = function () {
+        if (retryTimer !== null) {
+          clearInterval(retryTimer);
+          retryTimer = null;
+        }
+      };
+
+      var replayPendingRpc = function () {
+        pendingRpc.forEach(function (item) {
+          try {
+            origParentPost.apply(parentWin, item.args);
+          } catch (_postErr) {}
+        });
+      };
+
+      var ensureRetryTimer = function () {
+        if (retryTimer !== null) return;
+        retryTimer = setInterval(function () {
+          if (window.closed || pendingRpc.size === 0 || (Date.now() - startedAt > maxRetryMs)) {
+            stopRetryTimer();
+            if (Date.now() - startedAt > maxRetryMs) {
+              pendingRpc.clear();
+            }
+            return;
+          }
+          if (!bridgeReady) {
+            replayPendingRpc();
+          }
+        }, 1500);
+      };
+
+      window.addEventListener('message', function (ev) {
+        var data = ev && ev.data;
+        if (!data || typeof data !== 'object' || data.source !== 'antigravity-extension') return;
+        var wasReady = bridgeReady;
+        bridgeReady = true;
+        if (data.type === 'postmessage-rpc' && ('error' in data) && data.requestId != null) {
+          pendingRpc.delete(String(data.channel || '') + ':' + String(data.requestId));
+        }
+        if (!wasReady && pendingRpc.size > 0) {
+          replayPendingRpc();
+        }
+        if (pendingRpc.size === 0) {
+          stopRetryTimer();
+        }
+      });
+
+      window.addEventListener('pagehide', function () {
+        stopRetryTimer();
+        pendingRpc.clear();
+      });
+
+      parentWin.postMessage = function (msg) {
+        if (!bridgeReady &&
+            msg && typeof msg === 'object' &&
+            msg.type === 'postmessage-rpc' &&
+            msg.source === 'antigravity-iframe' &&
+            !('error' in msg) &&
+            msg.requestId != null) {
+          var key = String(msg.channel || '') + ':' + String(msg.requestId);
+          pendingRpc.set(key, { args: Array.prototype.slice.call(arguments) });
+          ensureRetryTimer();
+        }
+        return origParentPost.apply(parentWin, arguments);
+      };
+    }
+  } catch (_err) {}
 }
 
 // http-proxy emits proxyRes before copying headers and calling proxyRes.pipe(res).
@@ -361,12 +458,34 @@ function patchProxyFile(targetPath) {
   return true;
 }
 
+function patchServiceWorkerFile(targetPath) {
+  const source = fs.readFileSync(targetPath, 'utf8');
+  const marker = '/* Antigravity webview cold-start resource timeout compatibility */';
+  if (source.includes(marker)) {
+    console.log(`Already patched ${targetPath}`);
+    return false;
+  }
+
+  const timeoutRe = /(\b(?:const|let|var)\s+resolveTimeout\s*=\s*)(?:30_000|30000|3e4)\b/;
+  if (!timeoutRe.test(source)) {
+    throw new Error(`Could not locate webview resolveTimeout in ${targetPath}`);
+  }
+  const updated = source.replace(timeoutRe, `${marker}\n$1300_000`);
+  fs.writeFileSync(targetPath, updated);
+  console.log(`Patched webview service-worker timeout in ${targetPath}`);
+  return true;
+}
+
 if (require.main === module) {
   patchProxyFile(resolveProxyPath());
+  if (!process.argv[2] || process.argv[3]) {
+    patchServiceWorkerFile(resolveServiceWorkerPath());
+  }
 } else {
   module.exports = {
     antigravityClientBridge,
     rewriteAntigravityHtmlStream,
     patchProxyFile,
+    patchServiceWorkerFile,
   };
 }
