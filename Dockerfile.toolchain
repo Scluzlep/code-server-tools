@@ -1,8 +1,8 @@
 # syntax=docker/dockerfile:1.4
 FROM debian:13-slim
 
-# 目标架构为 ARM64，无转译原生编译
-ARG TARGETARCH=arm64
+# 目标架构支持 linux/amd64 与 linux/arm64，无转译原生编译（由 BuildKit --platform 自动注入）
+ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive \
     SHELL=/bin/bash \
     LANG=C.UTF-8 \
@@ -11,28 +11,29 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # ------------------------------------------------------------------------------
 # 接收版本参数 (支持构建时覆盖，默认来自 .env)
 # ------------------------------------------------------------------------------
-ARG TOOLCHAIN_VERSION=1.2.0
-ARG GRADLE_VERSION=9.9.1
-ARG JDK25_URL="https://api.adoptium.net/v3/binary/latest/25/ga/linux/aarch64/jdk/hotspot/normal/eclipse"
+ARG TOOLCHAIN_VERSION=1.3.0
+ARG GRADLE_VERSION=9.9.2
+ARG JDK25_URL="https://api.adoptium.net/v3/binary/latest/25/ga/linux/{ARCH}/jdk/hotspot/normal/eclipse"
 
 ARG PYTHON_VERSION_310=3.10.22
 ARG PYTHON_VERSION_312=3.12.16
 ARG PYTHON_VERSION_313=3.13.18
 ARG PYTHON_VERSION_314=3.14.10
+ARG PYTHON_VERSION_315=3.15.2
 
 ARG GO_VERSION_1=1.26.11
 ARG GO_VERSION_2=1.27.4
 
-ARG ANDROID_CMDLINE_TOOLS_VERSION=11076708
-ARG ANDROID_PLATFORM=android-36
-ARG ANDROID_BUILD_TOOLS=36.0.0
+ARG ANDROID_CMDLINE_TOOLS_VERSION=15641748
+ARG ANDROID_PLATFORM=android-37.2
+ARG ANDROID_BUILD_TOOLS=37.0.0
 
 ARG KOTLIN_VERSION=2.4.21
 ARG JADX_VERSION=1.5.7
 ARG APKTOOL_VERSION=3.0.3
 
 # ------------------------------------------------------------------------------
-# 1. 基础编译工具链 & 系统库
+# 1. 基础编译工具链、系统库与 CLI 工具 (不含 Rust / Docker / kubectl)
 # ------------------------------------------------------------------------------
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential gcc g++ clang llvm lld cmake ninja-build \
@@ -42,31 +43,43 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libxml2-dev libxslt1-dev libxmlsec1-dev libffi-dev liblzma-dev jq \
     vim zsh sudo passwd gosu dbus dbus-user-session gnome-keyring libsecret-1-0 \
     libatomic1 libstdc++6 procps locales \
+    tmux bubblewrap ripgrep fd-find fzf tree rsync less file patch \
+    openssh-client git-lfs sqlite3 iproute2 dnsutils iputils-ping \
+    netcat-openbsd strace gdb patchelf xxd shellcheck htop bat eza \
+    && git lfs install --system --skip-repo \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
 # ------------------------------------------------------------------------------
 # 2. 多版本 Java (Adoptium Temurin 8/17/21/25 GA) + Gradle
 # ------------------------------------------------------------------------------
 ENV JAVA_ROOT=/opt/java GRADLE_HOME=/opt/gradle
-RUN mkdir -p ${JAVA_ROOT}/jdk-8 ${JAVA_ROOT}/jdk-17 ${JAVA_ROOT}/jdk-21 ${JAVA_ROOT}/jdk-25 /tmp/jdk && \
+RUN set -eux; \
+    target_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "${target_arch}" in \
+      arm64) jdk_arch="aarch64" ;; \
+      amd64) jdk_arch="x64" ;; \
+      *) echo "Unsupported TARGETARCH: ${target_arch}" >&2; exit 1 ;; \
+    esac; \
+    jdk25_url="$(printf '%s' "${JDK25_URL}" | sed -e "s|{ARCH}|${jdk_arch}|g" -e "s|/linux/aarch64/|/linux/${jdk_arch}/|g")"; \
+    mkdir -p ${JAVA_ROOT}/jdk-8 ${JAVA_ROOT}/jdk-17 ${JAVA_ROOT}/jdk-21 ${JAVA_ROOT}/jdk-25 /tmp/jdk; \
     # JDK 8
-    curl -fsSL --retry 5 --retry-delay 3 "https://api.adoptium.net/v3/binary/latest/8/ga/linux/aarch64/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk8.tar.gz && \
-    tar -xzf /tmp/jdk/jdk8.tar.gz -C ${JAVA_ROOT}/jdk-8 --strip-components=1 && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://api.adoptium.net/v3/binary/latest/8/ga/linux/${jdk_arch}/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk8.tar.gz; \
+    tar -xzf /tmp/jdk/jdk8.tar.gz -C ${JAVA_ROOT}/jdk-8 --strip-components=1; \
     # JDK 17
-    curl -fsSL --retry 5 --retry-delay 3 "https://api.adoptium.net/v3/binary/latest/17/ga/linux/aarch64/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk17.tar.gz && \
-    tar -xzf /tmp/jdk/jdk17.tar.gz -C ${JAVA_ROOT}/jdk-17 --strip-components=1 && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://api.adoptium.net/v3/binary/latest/17/ga/linux/${jdk_arch}/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk17.tar.gz; \
+    tar -xzf /tmp/jdk/jdk17.tar.gz -C ${JAVA_ROOT}/jdk-17 --strip-components=1; \
     # JDK 21 (默认)
-    curl -fsSL --retry 5 --retry-delay 3 "https://api.adoptium.net/v3/binary/latest/21/ga/linux/aarch64/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk21.tar.gz && \
-    tar -xzf /tmp/jdk/jdk21.tar.gz -C ${JAVA_ROOT}/jdk-21 --strip-components=1 && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://api.adoptium.net/v3/binary/latest/21/ga/linux/${jdk_arch}/jdk/hotspot/normal/eclipse" -o /tmp/jdk/jdk21.tar.gz; \
+    tar -xzf /tmp/jdk/jdk21.tar.gz -C ${JAVA_ROOT}/jdk-21 --strip-components=1; \
     # JDK 25 GA
-    curl -fsSL --retry 5 --retry-delay 3 "${JDK25_URL}" -o /tmp/jdk/jdk25.tar.gz && \
-    tar -xzf /tmp/jdk/jdk25.tar.gz -C ${JAVA_ROOT}/jdk-25 --strip-components=1 && \
-    rm -rf /tmp/jdk && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "${jdk25_url}" -o /tmp/jdk/jdk25.tar.gz; \
+    tar -xzf /tmp/jdk/jdk25.tar.gz -C ${JAVA_ROOT}/jdk-25 --strip-components=1; \
+    rm -rf /tmp/jdk; \
     # Gradle
-    mkdir -p /tmp/gradle && \
-    curl -fsSL --retry 5 --retry-delay 3 "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle/gradle.zip && \
-    unzip -q /tmp/gradle/gradle.zip -d /opt && \
-    mv /opt/gradle-${GRADLE_VERSION} ${GRADLE_HOME} && \
+    mkdir -p /tmp/gradle; \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://services.gradle.org/distributions/gradle-${GRADLE_VERSION}-bin.zip" -o /tmp/gradle/gradle.zip; \
+    unzip -q /tmp/gradle/gradle.zip -d /opt; \
+    mv /opt/gradle-${GRADLE_VERSION} ${GRADLE_HOME}; \
     rm -rf /tmp/gradle
 
 # ------------------------------------------------------------------------------
@@ -74,14 +87,16 @@ RUN mkdir -p ${JAVA_ROOT}/jdk-8 ${JAVA_ROOT}/jdk-17 ${JAVA_ROOT}/jdk-21 ${JAVA_R
 # ------------------------------------------------------------------------------
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 ENV UV_PYTHON_INSTALL_DIR=/opt/uv/python \
+    UV_HTTP_TIMEOUT=300 \
     PYENV_ROOT=/opt/pyenvs
 RUN mkdir -p ${PYENV_ROOT} && \
-    uv python install ${PYTHON_VERSION_310} ${PYTHON_VERSION_312} ${PYTHON_VERSION_313} ${PYTHON_VERSION_314} && \
+    uv python install ${PYTHON_VERSION_310} ${PYTHON_VERSION_312} ${PYTHON_VERSION_313} ${PYTHON_VERSION_314} ${PYTHON_VERSION_315} && \
     uv venv --seed ${PYENV_ROOT}/py310 --python ${PYTHON_VERSION_310} && \
     uv venv --seed ${PYENV_ROOT}/py312 --python ${PYTHON_VERSION_312} && \
     uv venv --seed ${PYENV_ROOT}/py313 --python ${PYTHON_VERSION_313} && \
     uv venv --seed ${PYENV_ROOT}/py314 --python ${PYTHON_VERSION_314} && \
-    for ver in py310 py312 py313 py314; do \
+    uv venv --seed ${PYENV_ROOT}/py315 --python ${PYTHON_VERSION_315} && \
+    for ver in py310 py312 py313 py314 py315; do \
       uv pip install --python ${PYENV_ROOT}/${ver} \
         wheel setuptools \
         numpy pandas scipy matplotlib \
@@ -97,18 +112,22 @@ RUN mkdir -p /usr/local/share/jupyter/kernels && \
     ${PYENV_ROOT}/py310/bin/python -m ipykernel install --prefix=/usr/local --name python310 --display-name "Python 3.10" && \
     ${PYENV_ROOT}/py312/bin/python -m ipykernel install --prefix=/usr/local --name python312 --display-name "Python 3.12" && \
     ${PYENV_ROOT}/py313/bin/python -m ipykernel install --prefix=/usr/local --name python313 --display-name "Python 3.13" && \
-    ${PYENV_ROOT}/py314/bin/python -m ipykernel install --prefix=/usr/local --name python314 --display-name "Python 3.14"
+    ${PYENV_ROOT}/py314/bin/python -m ipykernel install --prefix=/usr/local --name python314 --display-name "Python 3.14" && \
+    ${PYENV_ROOT}/py315/bin/python -m ipykernel install --prefix=/usr/local --name python315 --display-name "Python 3.15"
 
 # ------------------------------------------------------------------------------
-# 4. 多版本 Golang (1.26.10 与 1.27.3, 默认 1.26.10)
+# 4. 多版本 Golang (1.26.11 与 1.27.4, 默认 1.26.11)
 # ------------------------------------------------------------------------------
 ENV GO_ROOT=/opt/go
-RUN mkdir -p ${GO_ROOT}/go${GO_VERSION_1} ${GO_ROOT}/go${GO_VERSION_2} /tmp/go && \
-    curl -fsSL --retry 5 --retry-delay 3 "https://go.dev/dl/go${GO_VERSION_1}.linux-arm64.tar.gz" -o /tmp/go/go1.tar.gz && \
-    tar -xzf /tmp/go/go1.tar.gz -C ${GO_ROOT}/go${GO_VERSION_1} --strip-components=1 && \
-    curl -fsSL --retry 5 --retry-delay 3 "https://go.dev/dl/go${GO_VERSION_2}.linux-arm64.tar.gz" -o /tmp/go/go2.tar.gz && \
-    tar -xzf /tmp/go/go2.tar.gz -C ${GO_ROOT}/go${GO_VERSION_2} --strip-components=1 && \
-    rm -rf /tmp/go && \
+RUN set -eux; \
+    target_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "${target_arch}" in arm64|amd64) ;; *) echo "Unsupported TARGETARCH: ${target_arch}" >&2; exit 1 ;; esac; \
+    mkdir -p ${GO_ROOT}/go${GO_VERSION_1} ${GO_ROOT}/go${GO_VERSION_2} /tmp/go; \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://go.dev/dl/go${GO_VERSION_1}.linux-${target_arch}.tar.gz" -o /tmp/go/go1.tar.gz; \
+    tar -xzf /tmp/go/go1.tar.gz -C ${GO_ROOT}/go${GO_VERSION_1} --strip-components=1; \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://go.dev/dl/go${GO_VERSION_2}.linux-${target_arch}.tar.gz" -o /tmp/go/go2.tar.gz; \
+    tar -xzf /tmp/go/go2.tar.gz -C ${GO_ROOT}/go${GO_VERSION_2} --strip-components=1; \
+    rm -rf /tmp/go; \
     ln -sfn ${GO_ROOT}/go${GO_VERSION_1} ${GO_ROOT}/current
 
 # ------------------------------------------------------------------------------
@@ -117,47 +136,56 @@ RUN mkdir -p ${GO_ROOT}/go${GO_VERSION_1} ${GO_ROOT}/go${GO_VERSION_2} /tmp/go &
 ENV ANDROID_SDK_ROOT=/opt/android-sdk KOTLIN_HOME=/opt/kotlinc
 ENV PATH=${ANDROID_SDK_ROOT}/cmdline-tools/latest/bin:${ANDROID_SDK_ROOT}/platform-tools:${JAVA_ROOT}/jdk-21/bin:${PATH}
 RUN mkdir -p ${ANDROID_SDK_ROOT}/cmdline-tools && \
-    curl -fsSL --retry 5 --retry-delay 3 "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" -o /tmp/cmdline-tools.zip && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://dl.google.com/android/repository/commandlinetools-linux-${ANDROID_CMDLINE_TOOLS_VERSION}_latest.zip" -o /tmp/cmdline-tools.zip && \
     unzip -q /tmp/cmdline-tools.zip -d ${ANDROID_SDK_ROOT}/cmdline-tools && \
     mv ${ANDROID_SDK_ROOT}/cmdline-tools/cmdline-tools ${ANDROID_SDK_ROOT}/cmdline-tools/latest && \
     rm -f /tmp/cmdline-tools.zip && \
     yes | sdkmanager --licenses && \
     sdkmanager "platform-tools" "platforms;${ANDROID_PLATFORM}" "build-tools;${ANDROID_BUILD_TOOLS}" && \
     # Kotlin 编译器
-    curl -fsSL --retry 5 --retry-delay 3 "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" -o /tmp/kotlinc.zip && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://github.com/JetBrains/kotlin/releases/download/v${KOTLIN_VERSION}/kotlin-compiler-${KOTLIN_VERSION}.zip" -o /tmp/kotlinc.zip && \
     unzip -q /tmp/kotlinc.zip -d /opt && \
     rm -f /tmp/kotlinc.zip && \
     # JADX
     mkdir -p /opt/jadx && \
-    curl -fsSL --retry 5 --retry-delay 3 "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" -o /tmp/jadx.zip && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://github.com/skylot/jadx/releases/download/v${JADX_VERSION}/jadx-${JADX_VERSION}.zip" -o /tmp/jadx.zip && \
     unzip -q /tmp/jadx.zip -d /opt/jadx && \
     rm -f /tmp/jadx.zip && \
     # Apktool
     mkdir -p /opt/apktool && \
-    curl -fsSL --retry 5 --retry-delay 3 "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" -o /opt/apktool/apktool && \
-    curl -fsSL --retry 5 --retry-delay 3 "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" -o /opt/apktool/apktool.jar && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://raw.githubusercontent.com/iBotPeaches/Apktool/master/scripts/linux/apktool" -o /opt/apktool/apktool && \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://github.com/iBotPeaches/Apktool/releases/download/v${APKTOOL_VERSION}/apktool_${APKTOOL_VERSION}.jar" -o /opt/apktool/apktool.jar && \
     chmod +x /opt/apktool/apktool /opt/apktool/apktool.jar
 
-ARG NODE_VERSION=24.22.3
+ARG NODE_VERSION=26.13.1
 
 # ------------------------------------------------------------------------------
 # 6. Node.js LTS、Corepack & 前端工具生态 (/opt/node)
 # ------------------------------------------------------------------------------
 ENV NODE_HOME=/opt/node
 ENV PATH=${NODE_HOME}/bin:${PATH}
-RUN mkdir -p ${NODE_HOME} && \
-    curl -fsSL --retry 5 --retry-delay 3 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-arm64.tar.xz" -o /tmp/node.tar.xz && \
-    tar -xJf /tmp/node.tar.xz -C ${NODE_HOME} --strip-components=1 && \
-    rm -f /tmp/node.tar.xz && \
-    corepack enable && \
-    npm install -g --force pnpm yarn typescript vite create-vue
+RUN set -eux; \
+    target_arch="${TARGETARCH:-$(dpkg --print-architecture)}"; \
+    case "${target_arch}" in \
+      arm64) node_arch="arm64" ;; \
+      amd64) node_arch="x64" ;; \
+      *) echo "Unsupported TARGETARCH: ${target_arch}" >&2; exit 1 ;; \
+    esac; \
+    mkdir -p ${NODE_HOME}; \
+    curl -fsSL --retry 5 --retry-delay 3 --connect-timeout 30 --max-time 600 "https://nodejs.org/dist/v${NODE_VERSION}/node-v${NODE_VERSION}-linux-${node_arch}.tar.xz" -o /tmp/node.tar.xz; \
+    tar -xJf /tmp/node.tar.xz -C ${NODE_HOME} --strip-components=1; \
+    rm -f /tmp/node.tar.xz; \
+    npm install -g --force corepack; \
+    corepack enable; \
+    npm install -g --force pnpm yarn typescript vite create-vue; \
+    rm -rf /root/.npm /root/.cache
 
 # ------------------------------------------------------------------------------
-# 7. Flutter SDK (Linux ARM64 稳定版)
+# 7. Flutter SDK (Linux amd64/arm64 稳定版)
 # ------------------------------------------------------------------------------
 ENV FLUTTER_ROOT=/opt/flutter
 ENV PATH=${FLUTTER_ROOT}/bin:${PATH}
-RUN git clone -b stable https://github.com/flutter/flutter.git ${FLUTTER_ROOT} && \
+RUN git clone --single-branch -b stable https://github.com/flutter/flutter.git ${FLUTTER_ROOT} && \
     git config --system --add safe.directory "*" && \
     flutter config --no-analytics && \
     flutter precache --android && \
@@ -171,10 +199,8 @@ COPY .env /etc/dev-toolchain.env
 
 LABEL org.opencontainers.image.title="dev-toolchain-base" \
       org.opencontainers.image.version="${TOOLCHAIN_VERSION}" \
-      org.opencontainers.image.description="ARM64 heavy development toolchain base image"
+      org.opencontainers.image.description="Multi-arch (amd64/arm64) heavy development toolchain base image"
 
-
-# Shell and tool aliases belong to the pinned toolchain layer, not to code-server.
 ENV JAVA_HOME=/opt/java/jdk-21 \
     GOROOT=/opt/go/go${GO_VERSION_1} \
     GOPATH=/config/go \
@@ -188,14 +214,15 @@ ENV JAVA_HOME=/opt/java/jdk-21 \
 ENV PATH=/opt/pyenvs/py312/bin:/opt/java/jdk-21/bin:/opt/gradle/bin:/opt/go/go${GO_VERSION_1}/bin:/opt/node/bin:/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/usr/local/bin:${PATH}
 
 RUN set -eux; \
-    ln -sf /opt/pyenvs/py312/bin/python /usr/local/bin/python; \
-    ln -sf /opt/pyenvs/py312/bin/python3 /usr/local/bin/python3; \
-    ln -sf /opt/pyenvs/py312/bin/pip /usr/local/bin/pip; \
-    ln -sf /opt/pyenvs/py312/bin/jupyter /usr/local/bin/jupyter; \
-    for ver in 310 312 313 314; do \
-      ln -sf /opt/pyenvs/py$ver/bin/python /usr/local/bin/python$ver; \
-      ln -sf /opt/pyenvs/py$ver/bin/python /usr/local/bin/py$ver; \
-      ln -sf /opt/pyenvs/py$ver/bin/pip /usr/local/bin/pip$ver; \
+    mkwrap() { rm -f "$2" && printf '#!/bin/sh\nexec "%s" "$@"\n' "$1" > "$2" && chmod 0755 "$2"; }; \
+    mkwrap /opt/pyenvs/py312/bin/python /usr/local/bin/python; \
+    mkwrap /opt/pyenvs/py312/bin/python3 /usr/local/bin/python3; \
+    mkwrap /opt/pyenvs/py312/bin/pip /usr/local/bin/pip; \
+    mkwrap /opt/pyenvs/py312/bin/jupyter /usr/local/bin/jupyter; \
+    for ver in 310 312 313 314 315; do \
+      mkwrap /opt/pyenvs/py$ver/bin/python /usr/local/bin/python$ver; \
+      mkwrap /opt/pyenvs/py$ver/bin/python /usr/local/bin/py$ver; \
+      mkwrap /opt/pyenvs/py$ver/bin/pip /usr/local/bin/pip$ver; \
     done; \
     for ver in 8 17 21 25; do \
       ln -sf /opt/java/jdk-$ver/bin/java /usr/local/bin/java$ver; \
@@ -206,7 +233,7 @@ RUN set -eux; \
     ln -sf /opt/go/go${GO_VERSION_1}/bin/gofmt /usr/local/bin/gofmt; \
     ln -sf /opt/go/go${GO_VERSION_1}/bin/go /usr/local/bin/go${GO_VERSION_1}; \
     ln -sf /opt/go/go${GO_VERSION_2}/bin/go /usr/local/bin/go${GO_VERSION_2}; \
-    for bin in node npm npx pnpm yarn tsc vite create-vue; do \
+    for bin in node npm npx corepack pnpm yarn tsc vite create-vue; do \
       ln -sf /opt/node/bin/$bin /usr/local/bin/$bin; \
     done; \
     ln -sf /opt/gradle/bin/gradle /usr/local/bin/gradle; \
@@ -217,7 +244,9 @@ RUN set -eux; \
     ln -sf /opt/flutter/bin/dart /usr/local/bin/dart; \
     ln -sf /opt/jadx/bin/jadx /usr/local/bin/jadx; \
     ln -sf /opt/apktool/apktool /usr/local/bin/apktool; \
-    ln -sf /opt/apktool/apktool.jar /usr/local/bin/apktool.jar
+    ln -sf /opt/apktool/apktool.jar /usr/local/bin/apktool.jar; \
+    if [ -x /usr/bin/fdfind ]; then ln -sf /usr/bin/fdfind /usr/local/bin/fd; fi; \
+    if [ -x /usr/bin/batcat ]; then ln -sf /usr/bin/batcat /usr/local/bin/bat; fi
 
 # OMZ/P10k are installed once in the reusable toolchain. No runtime git clone.
 RUN set -eux; \
@@ -229,8 +258,3 @@ RUN set -eux; \
     usermod -aG sudo abc; \
     printf 'abc ALL=(ALL:ALL) ALL\n' > /etc/sudoers.d/90-abc; \
     chmod 0440 /etc/sudoers.d/90-abc
-
-COPY scripts/dev-env.sh /etc/profile.d/dev-env.sh
-COPY scripts/zshrc /etc/skel/.zshrc
-COPY scripts/p10k.zsh /etc/skel/.p10k.zsh
-RUN chmod 0644 /etc/profile.d/dev-env.sh /etc/skel/.zshrc /etc/skel/.p10k.zsh

@@ -20,6 +20,10 @@ on:
   schedule:
     - cron: '0 2 * * *'
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
   packages: read
@@ -29,7 +33,8 @@ env:
 
 jobs:
   check-update:
-    runs-on: ubuntu-24.04-arm
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
     outputs:
       should_build_toolchain: ${{ steps.decide.outputs.should_build_toolchain }}
       should_build_runner: ${{ steps.decide.outputs.should_build_runner }}
@@ -38,7 +43,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Load version settings and normalized repository owner
         run: |
-          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
+          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '\r' | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
           echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
       - name: Read upstream release
         id: upstream
@@ -49,7 +54,7 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build only when a published tag is missing or explicitly requested
+      - name: Build only when multi-arch tags are missing or explicitly requested
         id: decide
         env:
           EVENT: ${{ github.event_name }}
@@ -57,12 +62,24 @@ jobs:
           FORCE_RUNNER: ${{ inputs.force_runner }}
           UPSTREAM_TAG: ${{ steps.upstream.outputs.latest_upstream_tag }}
         run: |
+          set -euo pipefail
           toolchain_ref="$REGISTRY/$REGISTRY_OWNER/$TOOLCHAIN_IMAGE_NAME:$TOOLCHAIN_VERSION"
           runner_ref="$REGISTRY/$REGISTRY_OWNER/$RUNNER_IMAGE_NAME:$UPSTREAM_TAG"
+
+          has_multiarch_manifest() {
+            local ref="$1"
+            docker buildx imagetools inspect --raw "$ref" 2>/dev/null | jq -e '
+              (.manifests // []) as $m |
+              any($m[]; .platform.os == "linux" and .platform.architecture == "amd64") and
+              any($m[]; .platform.os == "linux" and .platform.architecture == "arm64")
+            ' >/dev/null 2>&1
+          }
+
           toolchain_exists=false
           runner_exists=false
-          if docker buildx imagetools inspect "$toolchain_ref" >/dev/null 2>&1; then toolchain_exists=true; fi
-          if docker buildx imagetools inspect "$runner_ref" >/dev/null 2>&1; then runner_exists=true; fi
+          if has_multiarch_manifest "$toolchain_ref"; then toolchain_exists=true; fi
+          if has_multiarch_manifest "$runner_ref"; then runner_exists=true; fi
+
           build_toolchain=false
           build_runner=false
           if [ "$toolchain_exists" != true ] || [ "$REBUILD_TOOLCHAIN" = true ]; then
@@ -73,23 +90,46 @@ jobs:
              [ "$FORCE_RUNNER" = true ]; then
             build_runner=true
           fi
+
           echo "should_build_toolchain=$build_toolchain" >> "$GITHUB_OUTPUT"
           echo "should_build_runner=$build_runner" >> "$GITHUB_OUTPUT"
-          echo "toolchain=$toolchain_ref exists=$toolchain_exists rebuild=$build_toolchain"
-          echo "runner=$runner_ref exists=$runner_exists rebuild=$build_runner"
+          echo "toolchain=$toolchain_ref multiarch_exists=$toolchain_exists rebuild=$build_toolchain"
+          echo "runner=$runner_ref multiarch_exists=$runner_exists rebuild=$build_runner"
 
   build-toolchain:
     needs: check-update
     if: needs.check-update.outputs.should_build_toolchain == 'true' && github.event_name != 'pull_request'
-    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 90
     permissions:
-      contents: write
+      contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: Free disk space on amd64 runner
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift
+          docker system prune -af || true
       - name: Load versions and repository owner
         run: |
-          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
+          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '\r' | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
           echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
@@ -97,13 +137,13 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build versioned Debian 13 toolchain
+      - name: Build versioned Debian 13 toolchain (${{ matrix.arch }})
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile.toolchain
-          platforms: linux/arm64
-          push: true
+          platforms: ${{ matrix.platform }}
           build-args: |
             TOOLCHAIN_VERSION=${{ env.TOOLCHAIN_VERSION }}
             GRADLE_VERSION=${{ env.GRADLE_VERSION }}
@@ -112,6 +152,7 @@ jobs:
             PYTHON_VERSION_312=${{ env.PYTHON_VERSION_312 }}
             PYTHON_VERSION_313=${{ env.PYTHON_VERSION_313 }}
             PYTHON_VERSION_314=${{ env.PYTHON_VERSION_314 }}
+            PYTHON_VERSION_315=${{ env.PYTHON_VERSION_315 }}
             GO_VERSION_1=${{ env.GO_VERSION_1 }}
             GO_VERSION_2=${{ env.GO_VERSION_2 }}
             ANDROID_CMDLINE_TOOLS_VERSION=${{ env.ANDROID_CMDLINE_TOOLS_VERSION }}
@@ -121,11 +162,64 @@ jobs:
             JADX_VERSION=${{ env.JADX_VERSION }}
             APKTOOL_VERSION=${{ env.APKTOOL_VERSION }}
             NODE_VERSION=${{ env.NODE_VERSION }}
-          tags: |
-            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:${{ env.TOOLCHAIN_VERSION }}
-            ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:latest
-          cache-from: type=gha,scope=toolchain-arm64
-          cache-to: type=gha,mode=max,scope=toolchain-arm64
+          outputs: type=image,name=ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=toolchain-${{ matrix.arch }}
+          cache-to: type=gha,mode=min,scope=toolchain-${{ matrix.arch }}
+      - name: Export toolchain digest
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          test -n "$digest"
+          touch "/tmp/digests/${digest#sha256:}"
+      - name: Upload toolchain digest artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: toolchain-digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+
+  merge-toolchain:
+    needs: [check-update, build-toolchain]
+    if: needs.check-update.outputs.should_build_toolchain == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load versions and repository owner
+        run: |
+          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '\r' | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
+          echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - name: Download toolchain digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: toolchain-digests-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create and inspect multi-arch toolchain manifest
+        run: |
+          set -euo pipefail
+          cd /tmp/digests
+          img="${REGISTRY}/${REGISTRY_OWNER}/${TOOLCHAIN_IMAGE_NAME}"
+          docker buildx imagetools create \
+            -t "${img}:${TOOLCHAIN_VERSION}" \
+            -t "${img}:latest" \
+            $(printf "${img}@sha256:%s " *)
+          docker buildx imagetools inspect "${img}:${TOOLCHAIN_VERSION}"
+          docker buildx imagetools inspect --raw "${img}:${TOOLCHAIN_VERSION}" | jq -e '
+            (.manifests // []) as $m |
+            any($m[]; .platform.os == "linux" and .platform.architecture == "amd64") and
+            any($m[]; .platform.os == "linux" and .platform.architecture == "arm64")
+          ' >/dev/null
       - name: Publish toolchain release with version snapshot
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
@@ -140,77 +234,288 @@ jobs:
           fi
 
   build-runner:
-    needs: [check-update, build-toolchain]
+    needs: [check-update, merge-toolchain]
     if: |
       always() &&
+      !cancelled() &&
+      needs.check-update.result == 'success' &&
       needs.check-update.outputs.should_build_runner == 'true' &&
-      (needs.build-toolchain.result == 'success' || needs.build-toolchain.result == 'skipped')
-    runs-on: ubuntu-24.04-arm
+      (needs.merge-toolchain.result == 'success' || (needs.merge-toolchain.result == 'skipped' && (github.event_name == 'pull_request' || needs.check-update.outputs.should_build_toolchain != 'true')))
+    timeout-minutes: 90
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux/amd64
+            runner: ubuntu-latest
+            arch: amd64
+          - platform: linux/arm64
+            runner: ubuntu-24.04-arm
+            arch: arm64
+    runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@v4
+      - name: Free disk space on amd64 runner
+        if: matrix.arch == 'amd64'
+        run: |
+          sudo rm -rf \
+            /usr/share/dotnet \
+            /opt/ghc \
+            /usr/local/lib/android \
+            /usr/local/share/boost \
+            /opt/hostedtoolcache/CodeQL \
+            /usr/share/swift
+          docker system prune -af || true
       - name: Load versions and repository owner
-        id: meta
-        env:
-          UPSTREAM_TAG: ${{ needs.check-update.outputs.upstream_tag }}
         run: |
           grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '\r' | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
-          set -a
-          . <(grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '\r')
-          set +a
-          owner="${GITHUB_REPOSITORY_OWNER,,}"
-          echo "REGISTRY_OWNER=$owner" >> "$GITHUB_ENV"
-          {
-            echo "tags<<EOF"
-            if [ "${{ github.event_name }}" = "pull_request" ]; then
-              echo "ghcr.io/${owner}/${RUNNER_IMAGE_NAME}:pr-${GITHUB_SHA}"
-            else
-              echo "ghcr.io/${owner}/${RUNNER_IMAGE_NAME}:${UPSTREAM_TAG}"
-              echo "ghcr.io/${owner}/${RUNNER_IMAGE_NAME}:latest"
-              echo "ghcr.io/${owner}/${RUNNER_IMAGE_NAME}:${GITHUB_SHA}"
-            fi
-            echo "EOF"
-          } >> "$GITHUB_OUTPUT"
+          echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
       - uses: docker/setup-buildx-action@v3
+        if: github.event_name != 'pull_request' || needs.check-update.outputs.should_build_toolchain != 'true'
       - uses: docker/login-action@v3
         if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build standalone code-server on top of shared toolchain
+      - name: Build local toolchain and runner for PR verification (${{ matrix.arch }})
+        if: github.event_name == 'pull_request' && needs.check-update.outputs.should_build_toolchain == 'true'
+        env:
+          UPSTREAM_TAG: ${{ needs.check-update.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          DOCKER_BUILDKIT=1 docker build \
+            --platform "${{ matrix.platform }}" \
+            -f Dockerfile.toolchain \
+            --build-arg "TOOLCHAIN_VERSION=${TOOLCHAIN_VERSION}" \
+            --build-arg "GRADLE_VERSION=${GRADLE_VERSION}" \
+            --build-arg "JDK25_URL=${JDK25_URL}" \
+            --build-arg "PYTHON_VERSION_310=${PYTHON_VERSION_310}" \
+            --build-arg "PYTHON_VERSION_312=${PYTHON_VERSION_312}" \
+            --build-arg "PYTHON_VERSION_313=${PYTHON_VERSION_313}" \
+            --build-arg "PYTHON_VERSION_314=${PYTHON_VERSION_314}" \
+            --build-arg "PYTHON_VERSION_315=${PYTHON_VERSION_315}" \
+            --build-arg "GO_VERSION_1=${GO_VERSION_1}" \
+            --build-arg "GO_VERSION_2=${GO_VERSION_2}" \
+            --build-arg "ANDROID_CMDLINE_TOOLS_VERSION=${ANDROID_CMDLINE_TOOLS_VERSION}" \
+            --build-arg "ANDROID_PLATFORM=${ANDROID_PLATFORM}" \
+            --build-arg "ANDROID_BUILD_TOOLS=${ANDROID_BUILD_TOOLS}" \
+            --build-arg "KOTLIN_VERSION=${KOTLIN_VERSION}" \
+            --build-arg "JADX_VERSION=${JADX_VERSION}" \
+            --build-arg "APKTOOL_VERSION=${APKTOOL_VERSION}" \
+            --build-arg "NODE_VERSION=${NODE_VERSION}" \
+            -t "local/dev-toolchain-base:pr-${{ matrix.arch }}" \
+            .
+          DOCKER_BUILDKIT=1 docker build \
+            --platform "${{ matrix.platform }}" \
+            -f Dockerfile \
+            --build-arg "TOOLCHAIN_IMAGE=local/dev-toolchain-base:pr-${{ matrix.arch }}" \
+            --build-arg "CODE_SERVER_VERSION=${UPSTREAM_TAG}" \
+            --build-arg "TTYD_VERSION=${TTYD_VERSION}" \
+            --build-arg "GH_VERSION=${GH_VERSION}" \
+            --build-arg "YQ_VERSION=${YQ_VERSION}" \
+            -t "ghcr.io/${REGISTRY_OWNER}/${RUNNER_IMAGE_NAME}:pr-${GITHUB_SHA}" \
+            .
+      - name: Build runner for PR atop published toolchain (${{ matrix.arch }})
+        if: github.event_name == 'pull_request' && needs.check-update.outputs.should_build_toolchain != 'true'
         uses: docker/build-push-action@v6
         with:
           context: .
           file: Dockerfile
-          platforms: linux/arm64
-          push: ${{ github.event_name != 'pull_request' }}
-          load: ${{ github.event_name == 'pull_request' }}
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: true
           build-args: |
-            CODE_SERVER_VERSION=${{ needs.check-update.outputs.upstream_tag }}
             TOOLCHAIN_IMAGE=ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:${{ env.TOOLCHAIN_VERSION }}
-          tags: ${{ steps.meta.outputs.tags }}
-          cache-from: type=gha,scope=runner-arm64
-          cache-to: type=gha,mode=max,scope=runner-arm64
-      - name: Verify ARM64 Runner Container
+            CODE_SERVER_VERSION=${{ needs.check-update.outputs.upstream_tag }}
+            TTYD_VERSION=${{ env.TTYD_VERSION }}
+            GH_VERSION=${{ env.GH_VERSION }}
+            YQ_VERSION=${{ env.YQ_VERSION }}
+          tags: ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }}:pr-${{ github.sha }}
+          cache-from: type=gha,scope=runner-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=runner-${{ matrix.arch }}
+      - name: Build and push runner by digest (${{ matrix.arch }})
+        id: build
+        if: github.event_name != 'pull_request'
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: ${{ matrix.platform }}
+          build-args: |
+            TOOLCHAIN_IMAGE=ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.TOOLCHAIN_IMAGE_NAME }}:${{ env.TOOLCHAIN_VERSION }}
+            CODE_SERVER_VERSION=${{ needs.check-update.outputs.upstream_tag }}
+            TTYD_VERSION=${{ env.TTYD_VERSION }}
+            GH_VERSION=${{ env.GH_VERSION }}
+            YQ_VERSION=${{ env.YQ_VERSION }}
+          outputs: type=image,name=ghcr.io/${{ env.REGISTRY_OWNER }}/${{ env.RUNNER_IMAGE_NAME }},push-by-digest=true,name-canonical=true,push=true
+          cache-from: type=gha,scope=runner-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=runner-${{ matrix.arch }}
+      - name: Export runner digest
+        if: github.event_name != 'pull_request'
+        run: |
+          mkdir -p /tmp/digests
+          digest="${{ steps.build.outputs.digest }}"
+          test -n "$digest"
+          touch "/tmp/digests/${digest#sha256:}"
+      - name: Upload runner digest artifact
+        if: github.event_name != 'pull_request'
+        uses: actions/upload-artifact@v4
+        with:
+          name: runner-digests-${{ matrix.arch }}
+          path: /tmp/digests/*
+          retention-days: 1
+          if-no-files-found: error
+      - name: Verify Runner Container
         if: github.event_name == 'pull_request'
         run: |
           set -euo pipefail
           IMG="ghcr.io/${REGISTRY_OWNER}/${RUNNER_IMAGE_NAME}:pr-${GITHUB_SHA}"
-          docker run --rm --entrypoint /usr/local/bin/agyshell "$IMG" --check
-          docker run --rm --entrypoint /usr/local/bin/ttyd "$IMG" --version
-          docker run --rm --entrypoint tmux "$IMG" -V
-          docker run --rm --entrypoint /usr/local/bin/gh "$IMG" --version
-          docker run --rm --entrypoint bwrap "$IMG" --version
-          docker run --rm --entrypoint bash "$IMG" -lc '
+
+          test "$(docker run --rm --entrypoint dpkg "$IMG" --print-architecture)" = "${{ matrix.arch }}"
+
+          docker run --rm --entrypoint bash \
+            -e "EXPECTED_GRADLE_VERSION=${GRADLE_VERSION}" \
+            -e "EXPECTED_GO_1=${GO_VERSION_1}" \
+            -e "EXPECTED_GO_2=${GO_VERSION_2}" \
+            -e "EXPECTED_NODE_VERSION=${NODE_VERSION}" \
+            "$IMG" -lc '
+            set -euo pipefail
+
+            # Java 8 / 17 / 21 (default) / 25 + Gradle
+            java8_out="$(java8 -version 2>&1)"
+            [[ "$java8_out" == *"1.8."* ]]
+            java17_out="$(java17 -version 2>&1)"
+            [[ "$java17_out" == *"17."* ]]
+            java21_out="$(java21 -version 2>&1)"
+            [[ "$java21_out" == *"21."* ]]
+            java25_out="$(java25 -version 2>&1)"
+            [[ "$java25_out" == *"25"* ]]
+            java_def_out="$(java -version 2>&1)"
+            [[ "$java_def_out" == *"21."* ]]
+            gradle_out="$(gradle --version)"
+            [[ "$gradle_out" == *"Gradle ${EXPECTED_GRADLE_VERSION}"* ]]
+
+            # Python 3.10 / 3.12 / 3.13 / 3.14 / 3.15 + 5 Jupyter kernels
+            for ver in 310 312 313 314 315; do
+              python${ver} --version
+              py${ver} -c "import numpy, pandas, scipy, matplotlib, requests, bs4, lxml, httpx, ipykernel, frida"
+            done
+            kernels_out="$(jupyter kernelspec list)"
+            for k in python310 python312 python313 python314 python315; do
+              [[ "$kernels_out" == *"$k"* ]]
+            done
+
+            # Go 1.26.11 (default) / 1.27.4
+            [[ "$(go version)" == *"go${EXPECTED_GO_1}"* ]]
+            [[ "$(go${EXPECTED_GO_1} version)" == *"go${EXPECTED_GO_1}"* ]]
+            [[ "$(go${EXPECTED_GO_2} version)" == *"go${EXPECTED_GO_2}"* ]]
+
+            # Node.js + frontend toolchain
+            test "$(node -v)" = "v${EXPECTED_NODE_VERSION}"
+            corepack --version
+            pnpm --version
+            yarn --version
+            tsc --version
+            vite --version
+
+            # Android / reverse-engineering tools (do NOT execute adb on arm64: platform-tools is x86_64 ELF)
+            kotlinc -version 2>&1
+            jadx --version
+            apktool --version
+            sdkmanager --version
+            test -x /usr/local/bin/adb
+
+            # CLI & Tier 2/3 runtime tools
+            rg --version
+            fd --version
+            fzf --version
+            ssh -V
+            git lfs version
+            file --version
+            patch --version
+            less --version
+            tree --version
+            rsync --version
+            sqlite3 --version
+            ip -V
+            dig -v
+            ping -V
+            command -v nc
+            strace -V
+            gdb --version
+            patchelf --version
+            printf "hi" | xxd | grep -q 6869
+            shellcheck --version
+            htop --version
+            bat --version
+            eza --version
+            yq --version
+            gh --version
+            bwrap --version
+            tmux -V
+            ttyd --version
+            /usr/local/bin/agyshell --check
+
+            # dev-env.sh parse + execution in bash
+            bash -n /etc/profile.d/dev-env.sh
+            source /etc/profile.d/dev-env.sh
+            set-java 17
+            test "$JAVA_HOME" = "/opt/java/jdk-17"
+            [[ "$(java -version 2>&1)" == *"17."* ]]
+            set-py 315
+            test "$CURRENT_PY" = "/opt/pyenvs/py315"
+            [[ "$(python --version 2>&1)" == *"3.15."* ]]
+            set-go 1.27
+            test "$GOROOT" = "/opt/go/go${EXPECTED_GO_2}"
+            [[ "$(go version)" == *"go${EXPECTED_GO_2}"* ]]
+
+            # codex wrapper: missing extension exits 127 + 0700 CODEX_HOME, mock binary runs
+            set +e
+            CODEX_HOME=/tmp/codex-home-miss CODEX_EXTENSIONS_DIR=/tmp/codex-ext-miss /usr/local/bin/codex --version
+            rc=$?
+            set -e
+            test "$rc" -eq 127
+            test "$(stat -c "%a" /tmp/codex-home-miss)" = "700"
+            case "$(uname -m)" in
+              aarch64|arm64) codex_arch="linux-aarch64" ;;
+              x86_64|amd64) codex_arch="linux-x86_64" ;;
+              *) echo "Unsupported arch: $(uname -m)" >&2; exit 1 ;;
+            esac
+            mock_dir="/tmp/codex-ext-hit/openai.chatgpt-0.1.0/bin/${codex_arch}"
+            mkdir -p "$mock_dir"
+            printf "#!/usr/bin/env bash\necho mock-codex:\$*\n" > "$mock_dir/codex"
+            chmod 0755 "$mock_dir/codex"
+            out="$(CODEX_HOME=/tmp/codex-home-hit CODEX_EXTENSIONS_DIR=/tmp/codex-ext-hit /usr/local/bin/codex --test-flag)"
+            test "$out" = "mock-codex:--test-flag"
+            test "$(stat -c "%a" /tmp/codex-home-hit)" = "700"
+
+            # code-server patches
             sw="$(find /opt/code-server -type f -path "*/vs/workbench/contrib/webview/browser/pre/service-worker.js")"
             test -n "$sw"
             grep -q "300_000" "$sw"
             px="$(find /opt/code-server -type f -path "*/out/node/proxy.js")"
             test -n "$px"
             grep -q "__agyOrigPostMessage" "$px"
+          '
+
+          # dev-env.sh parse + execution in zsh
+          docker run --rm --entrypoint zsh -e "EXPECTED_GO_2=${GO_VERSION_2}" "$IMG" -lc '
+            set -e
+            zsh -n /etc/profile.d/dev-env.sh
+            source /etc/profile.d/dev-env.sh
+            set-java 17
+            test "$JAVA_HOME" = "/opt/java/jdk-17"
+            case "$(java -version 2>&1)" in *17.*) ;; *) exit 1 ;; esac
+            set-py 315
+            test "$CURRENT_PY" = "/opt/pyenvs/py315"
+            case "$(python --version 2>&1)" in *3.15.*) ;; *) exit 1 ;; esac
+            set-go 1.27
+            test "$GOROOT" = "/opt/go/go${EXPECTED_GO_2}"
+            case "$(go version)" in *"go${EXPECTED_GO_2}"*) ;; *) exit 1 ;; esac
           '
 
           cleanup() {
@@ -243,7 +548,9 @@ jobs:
             test -d /config/.codex
             test "$(stat -c "%a" /config/.codex)" = "700"
             gh --version
+            yq --version
             bwrap --version
+            flutter --version
           '
 
           # Unauthenticated requests must be redirected or rejected with 401.
@@ -348,3 +655,48 @@ jobs:
           [[ "$sessions_out" == *"ci-cli"* ]]
           docker exec -u abc agy-ci-verify /usr/local/bin/agyshell kill ci-web >/dev/null
           docker exec -u abc agy-ci-verify /usr/local/bin/agyshell kill ci-cli >/dev/null
+
+  merge-runner:
+    needs: [check-update, build-runner]
+    if: needs.check-update.outputs.should_build_runner == 'true' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Load versions and repository owner
+        run: |
+          grep -E '^[A-Za-z_][A-Za-z0-9_]*=' .env | tr -d '\r' | grep -v '^REGISTRY_OWNER=' >> "$GITHUB_ENV"
+          echo "REGISTRY_OWNER=${GITHUB_REPOSITORY_OWNER,,}" >> "$GITHUB_ENV"
+      - name: Download runner digests
+        uses: actions/download-artifact@v4
+        with:
+          pattern: runner-digests-*
+          path: /tmp/digests
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Create and inspect multi-arch runner manifest
+        env:
+          UPSTREAM_TAG: ${{ needs.check-update.outputs.upstream_tag }}
+        run: |
+          set -euo pipefail
+          cd /tmp/digests
+          img="${REGISTRY}/${REGISTRY_OWNER}/${RUNNER_IMAGE_NAME}"
+          docker buildx imagetools create \
+            -t "${img}:${UPSTREAM_TAG}" \
+            -t "${img}:latest" \
+            -t "${img}:${GITHUB_SHA}" \
+            $(printf "${img}@sha256:%s " *)
+          docker buildx imagetools inspect "${img}:latest"
+          docker buildx imagetools inspect --raw "${img}:latest" | jq -e '
+            (.manifests // []) as $m |
+            any($m[]; .platform.os == "linux" and .platform.architecture == "amd64") and
+            any($m[]; .platform.os == "linux" and .platform.architecture == "arm64")
+          ' >/dev/null
