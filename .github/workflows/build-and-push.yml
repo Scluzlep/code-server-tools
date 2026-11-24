@@ -658,7 +658,13 @@ jobs:
 
   merge-runner:
     needs: [check-update, build-runner]
-    if: needs.check-update.outputs.should_build_runner == 'true' && github.event_name != 'pull_request'
+    if: |
+      always() &&
+      !cancelled() &&
+      needs.check-update.result == 'success' &&
+      needs.build-runner.result == 'success' &&
+      needs.check-update.outputs.should_build_runner == 'true' &&
+      github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
