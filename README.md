@@ -37,7 +37,7 @@
 | **Java / JVM** | Adoptium Temurin JDK 8, 17, 21, 25 GA, Gradle `9.9.2` | **JDK 21** | 别名：`java8`, `java17`, `java21`, `java25`<br>切换：`set-java <8\|17\|21\|25>` (Bash/Zsh Tab 补全) |
 | **Python** | `3.10.22`, `3.12.16`, `3.13.18`, `3.14.10`, `3.15.2` (Astral `uv` 隔离环境) | **Python 3.12** | 别名：`python310`..`python315`, `py310`..`py315`, `pip310`..`pip315`<br>切换：`set-py` / `set-python <310\|312\|313\|314\|315>` |
 | **Golang** | 官方双版本：`1.26.11`, `1.27.4` | **Go 1.26.11** | 别名：`go1.26.11`, `go1.27.4`<br>切换：`set-go <版本或前缀>`（支持 `set-go 1.27`） |
-| **Android 开发** | Android 17 (`platforms;android-37.2`, `build-tools;37.0.0`, `cmdline-tools` `16111833`, `platform-tools`), Kotlin `2.4.21` | Android 17 | `sdkmanager`, `kotlinc`, `adb`（`arm64` 下建议用 `ADB_SERVER_SOCKET` 透传） |
+| **Android 开发** | Android 17 (`platforms;android-37.2`, `build-tools;37.0.0`, `cmdline-tools` `15641748`, `platform-tools`), Kotlin `2.4.21` | Android 17 | `sdkmanager`, `kotlinc`, `adb`（`arm64` 下建议用 `ADB_SERVER_SOCKET` 透传） |
 | **逆向工程** | JADX `1.5.7`, Apktool `3.0.3`, Frida & `frida-tools` | 稳定版 | `jadx`, `apktool`, `frida` |
 | **前端生态** | Node.js `26.13.1` (Lithium LTS), Corepack, `pnpm`, `yarn`, TypeScript, Vite, `create-vue` | Node 26 LTS | `node`, `npm`, `pnpm`, `yarn`, `tsc`, `vite`, `create-vue` |
 | **移动端跨平台**| Flutter SDK (`stable` 分支完整 tag, 已预缓存 Android 构建) | Stable | `flutter`, `dart` |

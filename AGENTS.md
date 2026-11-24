@@ -45,8 +45,9 @@
 
 1. **禁止为 `ARG TARGETARCH` 设置默认值**：`Dockerfile` 与 `Dockerfile.toolchain` 在 `FROM` 之后声明全局平台参数时**必须写作 `ARG TARGETARCH`（严禁写 `ARG TARGETARCH=arm64` 等默认值）**。在 BuildKit（`dockerfile2llb`）中，只要 `ARG TARGETARCH` 带默认值且构建命令行未显式传入 `--build-arg TARGETARCH=...`，BuildKit 会跳过 `--platform` 的自动注入而始终采用默认值，从而把错误架构的二进制装进目标镜像；如需在 `RUN` 内兜底，使用 POSIX 回退表达式 `"${TARGETARCH:-$(dpkg --print-architecture)}"`。
 2. **`adb` 在 `arm64` 下的执行限制**：Google Android SDK `platform-tools` 仅分发 `x86_64` ELF 二进制。在 `arm64` 容器构建或 CI 验证中**严禁执行 `adb` 命令**（禁止 `adb --version` / `adb version`），仅检查 `test -x /usr/local/bin/adb`；容器运行时通过 `ADB_SERVER_SOCKET=tcp:host.docker.internal:5037` 网络透传至宿主机执行。
-3. **Dockerfile POSIX `/bin/sh` 安全**：`Dockerfile` 与 `Dockerfile.toolchain` 默认通过 Debian 的 `/bin/sh`（`dash`）执行 `RUN`。`RUN` 指令内严禁使用 `[[ ... ]]`、bash 数组、进程替换 `<(...)` 或 `source` 等 bashism；参数校验使用 `case ... esac` 与 `[ ... ]` / `test`。
-4. **`scripts/dev-env.sh` 双 Shell 兼容**：`/etc/profile.d/dev-env.sh` 会同时被 `bash` 和 `zsh` 读取，**必须同时通过 `bash -n` 与 `zsh -n` 语法检查**，并可在两类 Shell 中执行 `set-java`、`set-py`、`set-go`：
+3. **`ANDROID_CMDLINE_TOOLS_VERSION` 必须保持纯 JVM 版本**：`ANDROID_CMDLINE_TOOLS_VERSION` 必须锁定在纯 JVM 实现的发行版（当前为 `21.0` / `15641748`，直接运行 Java `SdkManagerCli`）；**严禁升级至 `22.0+`（如 `15859902` / `16111833`）**，因为这些版本已将 `sdkmanager` 委托给仅提供 `x86_64` 原生二进制的 `bin/android` ELF，会在 `linux/arm64` 上直接触发 `Exec format error`（退出码 `126`）。
+4. **Dockerfile POSIX `/bin/sh` 安全**：`Dockerfile` 与 `Dockerfile.toolchain` 默认通过 Debian 的 `/bin/sh`（`dash`）执行 `RUN`。`RUN` 指令内严禁使用 `[[ ... ]]`、bash 数组、进程替换 `<(...)` 或 `source` 等 bashism；参数校验使用 `case ... esac` 与 `[ ... ]` / `test`。
+5. **`scripts/dev-env.sh` 双 Shell 兼容**：`/etc/profile.d/dev-env.sh` 会同时被 `bash` 和 `zsh` 读取，**必须同时通过 `bash -n` 与 `zsh -n` 语法检查**，并可在两类 Shell 中执行 `set-java`、`set-py`、`set-go`：
    - **严禁在 `dev-env.sh` 中使用 `zsh` 专有参数标志**（如 `${(f)...}`，会导致 `bash` 解析期直接报错）。
    - `set-go` 必须通过 `_dev_env_go_versions`（`find /opt/go -mindepth 1 -maxdepth 1 -type d -name 'go[0-9]*' | sort -V`）动态发现已安装版本，同时支持精确匹配与前缀匹配；`zsh` 补全使用 POSIX 命令替换 `compdef "_values go-version \$(_dev_env_go_versions | tr '\n' ' ')" set-go`。
 
