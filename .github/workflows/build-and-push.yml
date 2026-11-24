@@ -202,6 +202,8 @@ jobs:
           docker run --rm --entrypoint /usr/local/bin/agyshell "$IMG" --check
           docker run --rm --entrypoint /usr/local/bin/ttyd "$IMG" --version
           docker run --rm --entrypoint tmux "$IMG" -V
+          docker run --rm --entrypoint /usr/local/bin/gh "$IMG" --version
+          docker run --rm --entrypoint bwrap "$IMG" --version
           docker run --rm --entrypoint bash "$IMG" -lc '
             sw="$(find /opt/code-server -type f -path "*/vs/workbench/contrib/webview/browser/pre/service-worker.js")"
             test -n "$sw"
@@ -235,6 +237,14 @@ jobs:
             docker logs agy-ci-verify || true
             exit 1
           fi
+
+          docker exec -u abc agy-ci-verify bash -lc '
+            test "${CODEX_HOME:-}" = "/config/.codex"
+            test -d /config/.codex
+            test "$(stat -c "%a" /config/.codex)" = "700"
+            gh --version
+            bwrap --version
+          '
 
           # Unauthenticated requests must be redirected or rejected with 401.
           code_root="$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:18443/agy/)"

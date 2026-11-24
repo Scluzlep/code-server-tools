@@ -4,6 +4,7 @@ set -euo pipefail
 # Keep the 1Panel/LinuxServer environment contract without depending on s6.
 uid="${PUID:-1000}"
 gid="${PGID:-1000}"
+codex_home="${CODEX_HOME:-/config/.codex}"
 if [ "$(id -u)" -eq 0 ]; then
   if [ "$(id -g abc)" != "$gid" ]; then groupmod -o -g "$gid" abc; fi
   if [ "$(id -u abc)" != "$uid" ]; then usermod -o -u "$uid" abc; fi
@@ -19,6 +20,7 @@ if [ "$(id -u)" -eq 0 ]; then
              /config/.gemini/antigravity-cli /config/.gemini/config; do
     install -d -o abc -g abc -m 0755 "$dir"
   done
+  install -d -o abc -g abc -m 0700 "$codex_home"
   if [ -x /opt/antigravity/agy ] && [ ! -e /config/.gemini/bin/agy ]; then
     install -o abc -g abc -m 0755 /opt/antigravity/agy /config/.gemini/bin/agy
   fi
@@ -33,6 +35,8 @@ for dir in /config/.gemini /config/.gemini/bin /config/.gemini/antigravity \
            /config/.gemini/antigravity-cli /config/.gemini/config; do
   mkdir -p "$dir"
 done
+mkdir -p "$codex_home"
+chmod 0700 "$codex_home" 2>/dev/null || true
 if [ -x /opt/antigravity/agy ] && [ ! -e /config/.gemini/bin/agy ]; then
   cp /opt/antigravity/agy /config/.gemini/bin/agy
   chmod 0755 /config/.gemini/bin/agy
