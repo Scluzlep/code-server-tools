@@ -6,10 +6,12 @@ FROM ${TOOLCHAIN_IMAGE}
 ARG CODE_SERVER_VERSION=4.145.2
 ARG TARGETARCH=arm64
 ARG TTYD_VERSION=1.7.7
+ARG GH_VERSION=2.105.0
 ARG AGY_RELEASE_BASE_URL=https://antigravity-cli-auto-updater-974169037036.us-central1.run.app
 
 ENV DEBIAN_FRONTEND=noninteractive \
     HOME=/config \
+    CODEX_HOME=/config/.codex \
     SHELL=/usr/bin/zsh \
     XDG_CONFIG_HOME=/config/.config \
     XDG_DATA_HOME=/config/.local/share \
@@ -17,14 +19,14 @@ ENV DEBIAN_FRONTEND=noninteractive \
     EXTENSIONS_GALLERY='{"serviceUrl":"https://marketplace.visualstudio.com/_apis/public/gallery","cacheUrl":"https://vscode.blob.core.windows.net/gallery/index","itemUrl":"https://marketplace.visualstudio.com/items","resourceUrlTemplate":"https://{publisher}.vscode-unpkg.net/{publisher}/{name}/{version}/{path}"}'
 
 # Keep runtime PTY/CLI packages in the small Runner layer without invalidating the 15GB toolchain.
-RUN apt-get update && apt-get install -y --no-install-recommends tmux \
+RUN apt-get update && apt-get install -y --no-install-recommends tmux bubblewrap \
     && apt-get clean && rm -rf /var/lib/apt/lists/*
 
-# Install verified upstream ttyd (absent from Debian 13 APT) and official Antigravity CLI (agy).
+# Install verified upstream ttyd (absent from Debian 13 APT), GitHub CLI (gh), and official Antigravity CLI (agy).
 RUN set -eux; \
     case "${TARGETARCH}" in \
-      arm64) ttyd_arch="aarch64"; agy_arch="arm64" ;; \
-      amd64) ttyd_arch="x86_64"; agy_arch="amd64" ;; \
+      arm64) ttyd_arch="aarch64"; agy_arch="arm64"; gh_arch="arm64" ;; \
+      amd64) ttyd_arch="x86_64"; agy_arch="amd64"; gh_arch="amd64" ;; \
       *) echo "Unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
     esac; \
     mkdir -p /tmp/agy-install /opt/antigravity; \
@@ -37,6 +39,19 @@ RUN set -eux; \
     (cd /tmp/agy-install && grep -E "^[0-9a-f]{64}  ttyd\.${ttyd_arch}\$" ttyd.SHA256SUMS | sha256sum -c -); \
     install -m 0755 "/tmp/agy-install/ttyd.${ttyd_arch}" /usr/local/bin/ttyd; \
     ttyd --version; \
+    bwrap --version; \
+    gh_tar="gh_${GH_VERSION}_linux_${gh_arch}.tar.gz"; \
+    curl -fsSL --retry 5 --retry-delay 3 \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/${gh_tar}" \
+      -o "/tmp/agy-install/${gh_tar}"; \
+    curl -fsSL --retry 5 --retry-delay 3 \
+      "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_checksums.txt" \
+      -o /tmp/agy-install/gh.SHA256SUMS; \
+    (cd /tmp/agy-install && tr -d '\r' < gh.SHA256SUMS | grep -E "^[0-9a-f]{64}  ${gh_tar}\$" | sha256sum -c -); \
+    mkdir -p /tmp/agy-install/gh-extract; \
+    tar -xzf "/tmp/agy-install/${gh_tar}" -C /tmp/agy-install/gh-extract --strip-components=1; \
+    install -m 0755 /tmp/agy-install/gh-extract/bin/gh /usr/local/bin/gh; \
+    gh --version; \
     manifest_json="$(curl -fsSL --retry 5 --retry-delay 3 "${AGY_RELEASE_BASE_URL}/manifests/linux_${agy_arch}.json")"; \
     agy_url="$(printf '%s' "$manifest_json" | jq -er '.url')"; \
     agy_sha512="$(printf '%s' "$manifest_json" | jq -er '.sha512')"; \

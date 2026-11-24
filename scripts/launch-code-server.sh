@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 export HOME=/config
+export CODEX_HOME="${CODEX_HOME:-/config/.codex}"
+mkdir -p "$CODEX_HOME"
+chmod 0700 "$CODEX_HOME" 2>/dev/null || true
 export XDG_CONFIG_HOME=/config/.config
 export XDG_DATA_HOME=/config/.local/share
 export XDG_STATE_HOME=/config/.local/state
