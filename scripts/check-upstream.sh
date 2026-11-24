@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# The runner now installs Coder's standalone ARM64 release, not LinuxServer.
+# The runner installs Coder's standalone multi-arch (amd64/arm64) release, not LinuxServer.
 tag=$(curl -fsSL --retry 3 \
   -H 'Accept: application/vnd.github+json' \
   'https://api.github.com/repos/coder/code-server/releases/latest' |
