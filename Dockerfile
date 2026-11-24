@@ -130,6 +130,7 @@ RUN set -eux; \
 COPY scripts/dev-env.sh /etc/profile.d/dev-env.sh
 COPY scripts/zshrc /etc/skel/.zshrc
 COPY scripts/p10k.zsh /etc/skel/.p10k.zsh
+COPY scripts/GEMINI.md /etc/skel/.gemini/GEMINI.md
 COPY scripts/code-server-entrypoint.sh /usr/local/bin/code-server-entrypoint
 COPY scripts/launch-code-server.sh /usr/local/bin/launch-code-server
 COPY scripts/agyshell.sh /usr/local/bin/agyshell
@@ -139,7 +140,7 @@ COPY scripts/agy-webui /usr/local/share/agy-webui
 COPY scripts/agy-console.cjs /usr/local/lib/agy-console.cjs
 COPY scripts/patch-antigravity-proxy.cjs /usr/local/lib/patch-antigravity-proxy.cjs
 COPY scripts/patch-agy-routes.cjs /usr/local/lib/patch-agy-routes.cjs
-RUN chmod 0644 /etc/profile.d/dev-env.sh /etc/skel/.zshrc /etc/skel/.p10k.zsh /etc/agyshell.tmux.conf && \
+RUN chmod 0644 /etc/profile.d/dev-env.sh /etc/skel/.zshrc /etc/skel/.p10k.zsh /etc/skel/.gemini/GEMINI.md /etc/agyshell.tmux.conf && \
     chmod 0755 /usr/local/bin/code-server-entrypoint /usr/local/bin/launch-code-server /usr/local/bin/agyshell /usr/local/bin/codex && \
     node /usr/local/lib/patch-antigravity-proxy.cjs && \
     node /usr/local/lib/patch-agy-routes.cjs && \

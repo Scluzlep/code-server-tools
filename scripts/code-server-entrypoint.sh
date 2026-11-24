@@ -24,6 +24,9 @@ if [ "$(id -u)" -eq 0 ]; then
   if [ -x /opt/antigravity/agy ] && [ ! -e /config/.gemini/bin/agy ]; then
     install -o abc -g abc -m 0755 /opt/antigravity/agy /config/.gemini/bin/agy
   fi
+  if [ -f /etc/skel/.gemini/GEMINI.md ] && [ ! -e /config/.gemini/GEMINI.md ]; then
+    install -o abc -g abc -m 0644 /etc/skel/.gemini/GEMINI.md /config/.gemini/GEMINI.md
+  fi
   for file in .zshrc .p10k.zsh; do
     if [ ! -e "/config/$file" ]; then
       install -o abc -g abc -m 0644 "/etc/skel/$file" "/config/$file"
@@ -40,5 +43,9 @@ chmod 0700 "$codex_home" 2>/dev/null || true
 if [ -x /opt/antigravity/agy ] && [ ! -e /config/.gemini/bin/agy ]; then
   cp /opt/antigravity/agy /config/.gemini/bin/agy
   chmod 0755 /config/.gemini/bin/agy
+fi
+if [ -f /etc/skel/.gemini/GEMINI.md ] && [ ! -e /config/.gemini/GEMINI.md ]; then
+  cp /etc/skel/.gemini/GEMINI.md /config/.gemini/GEMINI.md
+  chmod 0644 /config/.gemini/GEMINI.md
 fi
 exec dbus-run-session -- /usr/local/bin/launch-code-server "$@"
