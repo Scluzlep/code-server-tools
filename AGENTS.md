@@ -85,6 +85,7 @@
 
 ## 5. 运行时约束与仓库边界
 
+- **Python venv 包装脚本（PEP 405）**：`/usr/local/bin/{python*,py*,pip*,jupyter}` 必须使用 `exec` 包装脚本（`#!/bin/sh\nexec "/opt/pyenvs/py<ver>/bin/..." "$@"`），**严禁使用 `ln -sf` 软链接**；否则 CPython 按 `argv[0]` 查找同目录 `pyvenv.cfg` 失败后会直接回退到 `/opt/uv/python/...` 裸解释器，导致丢失 venv `site-packages`。
 - **`CODEX_HOME` 安全权限**：容器内固定设置 `CODEX_HOME=/config/.codex`；入口脚本（`code-server-entrypoint.sh`、`launch-code-server.sh`）与 `scripts/codex.sh` 包装器在创建目录时均强制执行 `chmod 0700`。`codex` 包装器在未检测到 `openai.chatgpt-*/bin/<linux-arch>/codex` 时必须返回退出码 `127`。
 - **严禁提交敏感与本地临时文件**：禁止向仓库提交任何密钥、访问令牌、个人认证文件、`Google.google-antigravity-latest.vsix`、`swarmagy/`、`agent.md` 等本地产物。
 - **范围边界**：除非用户明确提出需求，否则**严禁引入 Rust 工具链、Docker CLI/Engine 或 `kubectl`**。

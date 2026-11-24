@@ -214,14 +214,15 @@ ENV JAVA_HOME=/opt/java/jdk-21 \
 ENV PATH=/opt/pyenvs/py312/bin:/opt/java/jdk-21/bin:/opt/gradle/bin:/opt/go/go${GO_VERSION_1}/bin:/opt/node/bin:/opt/flutter/bin:/opt/android-sdk/cmdline-tools/latest/bin:/opt/android-sdk/platform-tools:/usr/local/bin:${PATH}
 
 RUN set -eux; \
-    ln -sf /opt/pyenvs/py312/bin/python /usr/local/bin/python; \
-    ln -sf /opt/pyenvs/py312/bin/python3 /usr/local/bin/python3; \
-    ln -sf /opt/pyenvs/py312/bin/pip /usr/local/bin/pip; \
-    ln -sf /opt/pyenvs/py312/bin/jupyter /usr/local/bin/jupyter; \
+    mkwrap() { rm -f "$2" && printf '#!/bin/sh\nexec "%s" "$@"\n' "$1" > "$2" && chmod 0755 "$2"; }; \
+    mkwrap /opt/pyenvs/py312/bin/python /usr/local/bin/python; \
+    mkwrap /opt/pyenvs/py312/bin/python3 /usr/local/bin/python3; \
+    mkwrap /opt/pyenvs/py312/bin/pip /usr/local/bin/pip; \
+    mkwrap /opt/pyenvs/py312/bin/jupyter /usr/local/bin/jupyter; \
     for ver in 310 312 313 314 315; do \
-      ln -sf /opt/pyenvs/py$ver/bin/python /usr/local/bin/python$ver; \
-      ln -sf /opt/pyenvs/py$ver/bin/python /usr/local/bin/py$ver; \
-      ln -sf /opt/pyenvs/py$ver/bin/pip /usr/local/bin/pip$ver; \
+      mkwrap /opt/pyenvs/py$ver/bin/python /usr/local/bin/python$ver; \
+      mkwrap /opt/pyenvs/py$ver/bin/python /usr/local/bin/py$ver; \
+      mkwrap /opt/pyenvs/py$ver/bin/pip /usr/local/bin/pip$ver; \
     done; \
     for ver in 8 17 21 25; do \
       ln -sf /opt/java/jdk-$ver/bin/java /usr/local/bin/java$ver; \
